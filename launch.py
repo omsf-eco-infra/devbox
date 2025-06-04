@@ -65,7 +65,7 @@ def main():
 
     if status not in ["READY", "nonexistent"]:
         print(
-            f"Snapshot for project {args.project} is statu {status}. "
+            f"Snapshot for project {args.project} is status {status}. "
             "Wait until it is READY."
         )
         return
