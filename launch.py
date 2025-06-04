@@ -9,7 +9,7 @@ def make_parser():
     parser = argparse.ArgumentParser(description=(
         "Launch a persistent devbox EC2 instance with attached EBS volume"
     ))
-    parser.add_argument("--user", required=True, help="User ID")
+    parser.add_argument("--project", required=True, help="Project name")
     parser.add_argument(
         "--base-ami",
         help="AMI: only used for new snapshot-keys"
@@ -28,7 +28,6 @@ def make_parser():
         default=20,
         help="Size (GiB) for new empty data volume if no snapshot exists",
     )
-    parser.add_argument("--snapshot-key", help="Custom name for the snapshot to load")
     return parser
 
 
@@ -55,9 +54,8 @@ def main():
 
     table = ddb.Table(table_name)
 
-    sk = args.snapshot_key or f"{args.base_ami}#{args.instance_type}"
     try:
-        resp = table.get_item(Key={"user": args.user, "project": sk})
+        resp = table.get_item(Key={"project": args.project})
         item = resp.get("Item", {})
         restored_ami = item.get("AMI")
     except ClientError as e:
@@ -65,7 +63,7 @@ def main():
         return
 
     if not restored_ami:
-        print(f"No snapshot found for user {args.user} with key {sk}.")
+        print(f"No snapshot found for project {args.project}.")
         if not args.base_ami:
             raise ValueError("Please provide a base AMI to create a new snapshot.")
 
@@ -91,21 +89,19 @@ def main():
             {
                 "ResourceType": "instance",
                 "Tags": [
-                    {"Key": "Name", "Value": f"devbox-{args.user}-{sk}"},
-                    {"Key": "UserID", "Value": args.user},
-                    {"Key": "SnapshotKey", "Value": sk},
+                    {"Key": "Name", "Value": f"devbox-{args.project}"},
+                    {"Key": "Project", "Value": args.project},
                     {"Key": "InstanceType", "Value": args.instance_type},
                 ],
             },
-            # {
-            #     "ResourceType": "volume",
-            #     "Tags": [
-            #         {"Key": "UserID", "Value": args.user},
-            #         {"Key": "SnapshotKey", "Value": sk},
-            #         {"Key": "InstanceType", "Value": args.instance_type},
-            #         {"Key": "Application", "Value": "devbox"},
-            #     ],
-            # },
+            {
+                "ResourceType": "volume",
+                "Tags": [
+                    {"Key": "Project", "Value": args.project},
+                    {"Key": "InstanceType", "Value": args.instance_type},
+                    {"Key": "Application", "Value": "devbox"},
+                ],
+            },
         ],
     )
     instance_dct = resp["Instances"][0]
@@ -118,20 +114,6 @@ def main():
     # waiter = ec2.get_waiter("instance_running")
     # waiter.wait(InstanceIds=[instance_id])
     print("Instance is now running.")
-
-    instance.reload()
-
-    root_vol_id = next(
-        bdm["Ebs"]["VolumeId"]
-        for bdm in instance.block_device_mappings
-        if bdm["DeviceName"] == instance.root_device_name
-    )
-    print(f"Root volume is {root_vol_id}; tagging it…")
-    ec2_resource.Volume(root_vol_id).create_tags(Tags=[
-        {"Key": "Name",     "Value": f"{args.user}-{sk}-root"},
-        {"Key": "Snapshot", "Value": sk},
-        {"Key": "DevBox",   "Value": "true"},
-    ])
 
     desc = ec2.describe_instances(InstanceIds=[instance_id])["Reservations"][0][
         "Instances"
