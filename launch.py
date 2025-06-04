@@ -58,8 +58,16 @@ def main():
         resp = table.get_item(Key={"project": args.project})
         item = resp.get("Item", {})
         restored_ami = item.get("AMI")
+        status = item.get("Status", "nonexistent")
     except ClientError as e:
         print(f"Error fetching snapshot from DynamoDB: {e}")
+        return
+
+    if status not in ["READY", "nonexistent"]:
+        print(
+            f"Snapshot for project {args.project} is statu {status}. "
+            "Wait until it is READY."
+        )
         return
 
     if not restored_ami:
