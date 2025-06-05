@@ -4,9 +4,9 @@ variable "param_prefix" {
   default     = "/devbox"
 }
 
-variable "launch_template_id" {
-  description = "ID of the EC2 Launch Template to store in SSM"
-  type        = string
+variable "launch_template_ids" {
+  description = "List of EC2 Launch Template IDs to store in SSM"
+  type        = list(string)
 }
 
 variable "snapshot_table_name" {

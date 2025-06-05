@@ -1,6 +1,6 @@
-variable "subnet_id" {
-  description = "VPC subnet ID for EC2"
-  type        = string
+variable "subnet_ids" {
+  description = "List of VPC subnet IDs for EC2 instances across multiple AZs"
+  type        = list(string)
 }
 
 variable "ssh_sg_ids" {

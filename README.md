@@ -25,3 +25,13 @@ between different DevBox projects.
 ## DevBox Setup
 
 This is for an individual DevBox project. 
+
+## Troubleshooting
+
+### connect to host `<ip>` port 22: Connection refused
+
+Sometimes you'll get this error if you try to SSH into a DevBox immediately
+after it start running. This is because sometimes the networking is not fully
+set up yet. Wait a few seconds and try again.
+
+

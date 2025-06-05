@@ -38,14 +38,15 @@ resource "aws_iam_instance_profile" "ec2_profile" {
 }
 
 resource "aws_launch_template" "base" {
-  name_prefix = "${var.prefix}-"
+  count       = length(var.subnet_ids)
+  name_prefix = "${var.prefix}-az${count.index}-"
 
   iam_instance_profile {
     name = aws_iam_instance_profile.ec2_profile.name
   }
 
   network_interfaces {
-    subnet_id                   = var.subnet_id
+    subnet_id                   = var.subnet_ids[count.index]
     security_groups             = var.ssh_sg_ids
     associate_public_ip_address = true
   }
@@ -60,4 +61,7 @@ resource "aws_launch_template" "base" {
     #}
   #}
 
+  tags = {
+    Name = "${var.prefix}-launch-template-az${count.index}"
+  }
 }
