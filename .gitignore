@@ -1,0 +1,13 @@
+
+.ruff_cache
+
+# pixi environments
+.pixi
+*.egg-info
+
+# terraform files
+backend.hcl
+plan.tfplan
+*.tfvars
+.terraform*
+
