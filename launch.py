@@ -6,22 +6,16 @@ from botocore.exceptions import ClientError
 
 
 def make_parser():
-    parser = argparse.ArgumentParser(description=(
-        "Launch a persistent devbox EC2 instance with attached EBS volume"
-    ))
+    parser = argparse.ArgumentParser(
+        description=("Launch a persistent devbox EC2 instance with attached EBS volume")
+    )
     parser.add_argument("--project", required=True, help="Project name")
-    parser.add_argument(
-        "--base-ami",
-        help="AMI: only used for new snapshot-keys"
-    )
-    parser.add_argument(
-        "--instance-type",
-        required=True,
-        help="EC2 instance type"
-    )
+    parser.add_argument("--base-ami", help="AMI: only used for new snapshot-keys")
+    parser.add_argument("--instance-type", required=True, help="EC2 instance type")
     parser.add_argument("--key-pair", required=True, help="Name of the EC2 Key Pair")
-    parser.add_argument('--param-prefix', default="/devbox",
-                        help="Prefix for parameter store keys")
+    parser.add_argument(
+        "--param-prefix", default="/devbox", help="Prefix for parameter store keys"
+    )
     parser.add_argument(
         "--volume-size",
         type=int,
@@ -105,37 +99,39 @@ def main():
     # update volumes so that the largest one is at least args.volume_size
     if largest_volume_size < args.volume_size:
         if largest_volume:
-            print(f"Increasing volume size from {largest_volume_size} GiB to {args.volume_size} GiB")
+            print(
+                f"Increasing volume size from {largest_volume_size} GiB to {args.volume_size} GiB"
+            )
             largest_volume["Ebs"]["VolumeSize"] = args.volume_size
         else:
             print(f"Creating new volume of size {args.volume_size} GiB")
             largest_volume = {
                 "DeviceName": "/dev/sda1",
-                "Ebs": {"VolumeSize": args.volume_size, "VolumeType": "gp2"}
+                "Ebs": {"VolumeSize": args.volume_size, "VolumeType": "gp2"},
             }
             volumes.append(largest_volume)
-
 
     # extract AZ names and indices from launch templates
     az_info = {}
     for idx, lt_id in enumerate(lt_ids):
         try:
             lt_desc = ec2.describe_launch_templates(LaunchTemplateIds=[lt_id])
-            lt_name = lt_desc['LaunchTemplates'][0]['LaunchTemplateName']
-            az_idx = lt_name.split('az')[1].split('-')[0]
+            lt_name = lt_desc["LaunchTemplates"][0]["LaunchTemplateName"]
+            az_idx = lt_name.split("az")[1].split("-")[0]
             lt_version = ec2.describe_launch_template_versions(
-                LaunchTemplateId=lt_id,
-                Versions=['$Latest']
+                LaunchTemplateId=lt_id, Versions=["$Latest"]
             )
-            network_interfaces = lt_version['LaunchTemplateVersions'][0]['LaunchTemplateData'].get('NetworkInterfaces', [])
-            if network_interfaces and 'SubnetId' in network_interfaces[0]:
-                subnet_id = network_interfaces[0]['SubnetId']
+            network_interfaces = lt_version["LaunchTemplateVersions"][0][
+                "LaunchTemplateData"
+            ].get("NetworkInterfaces", [])
+            if network_interfaces and "SubnetId" in network_interfaces[0]:
+                subnet_id = network_interfaces[0]["SubnetId"]
                 subnet = ec2.describe_subnets(SubnetIds=[subnet_id])
-                az_name = subnet['Subnets'][0]['AvailabilityZone']
-                az_info[lt_id] = {'name': az_name, 'index': az_idx}
+                az_name = subnet["Subnets"][0]["AvailabilityZone"]
+                az_info[lt_id] = {"name": az_name, "index": az_idx}
         except Exception as e:
             print(f"Warning: Could not get AZ info for launch template {lt_id}: {e}")
-            az_info[lt_id] = {'name': f"az-{idx}", 'index': idx}
+            az_info[lt_id] = {"name": f"az-{idx}", "index": idx}
 
     # loop over AZs to launch the instance
     instance = None
@@ -143,7 +139,7 @@ def main():
     last_error = None
 
     for lt_id in lt_ids:
-        az_name = az_info[lt_id]['name']
+        az_name = az_info[lt_id]["name"]
         try:
             print(f"Attempting to launch instance in {az_name}...")
             resp = ec2.run_instances(
@@ -179,11 +175,13 @@ def main():
             instance_dct = resp["Instances"][0]
             instance_id = instance_dct["InstanceId"]
             instance = ec2_resource.Instance(instance_id)
-            print(f"Instance launched in {az_name}: {instance_id}. Waiting for running state...")
+            print(
+                f"Instance launched in {az_name}: {instance_id}. Waiting for running state..."
+            )
             break  # Exit loop on successful launch
         except ClientError as e:
-            error_code = e.response['Error']['Code']
-            error_message = e.response['Error']['Message']
+            error_code = e.response["Error"]["Code"]
+            error_message = e.response["Error"]["Message"]
             print(f"Failed to launch in {az_name}: {error_code} - {error_message}")
             last_error = e
             continue  # Try next AZ
@@ -218,8 +216,9 @@ def main():
             ExpressionAttributeValues={":s": "RUNNING", ":id": instance_id},
         )
     else:
-        raise RuntimeError(f"Unexpected status in DynamoDB: {status} "
-                           "(this should never happen)")
+        raise RuntimeError(
+            f"Unexpected status in DynamoDB: {status} (this should never happen)"
+        )
 
     desc = ec2.describe_instances(InstanceIds=[instance_id])["Reservations"][0][
         "Instances"
