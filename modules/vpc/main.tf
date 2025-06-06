@@ -1,3 +1,8 @@
+# Get available AZs in the specified region
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
 resource "aws_vpc" "this" {
   cidr_block = var.vpc_cidr
   tags       = { Name = "${var.name}-vpc" }
@@ -20,14 +25,17 @@ resource "aws_route" "default_route" {
 }
 
 resource "aws_subnet" "this" {
+  count             = length(var.subnet_cidr)
   vpc_id            = aws_vpc.this.id
-  cidr_block        = var.subnet_cidr
-  availability_zone = var.availability_zone
-  tags              = { Name = "${var.name}-subnet" }
+  cidr_block        = var.subnet_cidr[count.index]
+  availability_zone = data.aws_availability_zones.available.names[count.index % length(data.aws_availability_zones.available.names)]
+  map_public_ip_on_launch = true
+  tags              = { Name = "${var.name}-subnet-${count.index}" }
 }
 
 resource "aws_route_table_association" "public_assoc" {
-  subnet_id      = aws_subnet.this.id
+  count          = length(aws_subnet.this)
+  subnet_id      = aws_subnet.this[count.index].id
   route_table_id = aws_route_table.public.id
 }
 

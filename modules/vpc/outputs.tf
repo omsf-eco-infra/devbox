@@ -3,9 +3,9 @@ output "vpc_id" {
   value       = aws_vpc.this.id
 }
 
-output "subnet_id" {
-  description = "The ID of the created Subnet"
-  value       = aws_subnet.this.id
+output "subnet_ids" {
+  description = "The IDs of the created Subnets"
+  value       = aws_subnet.this[*].id
 }
 
 output "ssh_sg_id" {
