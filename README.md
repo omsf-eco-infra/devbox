@@ -14,6 +14,9 @@ provider "aws" {
 
 ## Individual User Setup
 
+**Prerequisite:** You must have an AWS account and the AWS CLI installed and
+configured.
+
 Each user will have to complete these steps once, but this will be reused
 between different DevBox projects.
 
@@ -31,7 +34,7 @@ This is for an individual DevBox project.
 ### connect to host `<ip>` port 22: Connection refused
 
 Sometimes you'll get this error if you try to SSH into a DevBox immediately
-after it start running. This is because sometimes the networking is not fully
+after it starts running. This is because sometimes the networking is not fully
 set up yet. Wait a few seconds and try again.
 
 
