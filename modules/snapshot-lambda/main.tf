@@ -70,7 +70,7 @@ EOT
 data "aws_ecr_image" "latest" {
   repository_name = aws_ecr_repository.snapshot_lambda.name
   image_tag       = "latest"
-  depends_on = [null_resource.build_and_push]
+  depends_on      = [null_resource.build_and_push]
 }
 
 
