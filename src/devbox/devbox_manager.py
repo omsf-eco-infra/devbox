@@ -177,8 +177,8 @@ class DevBoxManager:
                             ]
                         )
                         is_orphan = not bool(img_resp.get('Images', []))
-                    except ClientError:
-                        # If we can't check, assume it's not an orphan
+                    except (ClientError, Exception):
+                        # If we can't check (e.g., moto FilterNotImplementedError), assume it's not an orphan
                         is_orphan = False
 
                 if orphan_only and not is_orphan:

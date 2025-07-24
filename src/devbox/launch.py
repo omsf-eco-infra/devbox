@@ -92,11 +92,14 @@ def get_project_snapshot(
     try:
         resp = table.get_item(Key={"project": project_name})
         item = resp.get("Item", {})
+        if not item:
+            # Return a nonexistent project entry instead of an error
+            return {"project": project_name, "Status": "nonexistent"}, None
         return item, None
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code")
         if error_code == "ResourceNotFoundException":
-            return {}, "Project not found"
+            return {"project": project_name, "Status": "nonexistent"}, None
         return {}, f"DynamoDB error: {str(e)}"
 
 
@@ -131,7 +134,7 @@ def get_volume_info(
         )
 
     if not resp.get("Images"):
-        raise ValueError(f"No image found with ID: {image_id}")
+        raise ValueError(f"AMI {image_id} not found")
 
     image = resp["Images"][0]
     volumes = image.get("BlockDeviceMappings", []).copy()
@@ -154,6 +157,7 @@ def get_volume_info(
                 f"Increasing volume size from {largest_volume_size} GiB to {min_volume_size} GiB"
             )
             largest_volume["Ebs"]["VolumeSize"] = min_volume_size
+            largest_volume_size = min_volume_size
             # Ensure volume type is set to a modern type
             if "VolumeType" not in largest_volume["Ebs"]:
                 largest_volume["Ebs"]["VolumeType"] = "gp3"
@@ -168,6 +172,7 @@ def get_volume_info(
                     "DeleteOnTermination": True
                 },
             })
+            largest_volume_size = min_volume_size
 
     return volumes, largest_volume_size if largest_volume else 0
 
@@ -201,14 +206,17 @@ def get_launch_template_info(
             lt_desc = ec2.describe_launch_templates(LaunchTemplateIds=[lt_id])
             if lt_desc.get("LaunchTemplates"):
                 lt_name = lt_desc["LaunchTemplates"][0].get("LaunchTemplateName", "")
-                if lt_name and "az" in lt_name:
-                    # Extract AZ index from name (e.g., 'devbox-az1' -> '1')
-                    try:
-                        az_part = lt_name.split("az")[-1].split("-")[0]
-                        if az_part.isdigit():
-                            az_index = az_part
-                    except (IndexError, AttributeError):
-                        pass
+                if lt_name:
+                    # Extract AZ from template name (e.g., 'devbox-us-east-1a-template' -> 'us-east-1a')
+                    import re
+                    az_pattern = r'([a-z]{2}-[a-z]+-\d+[a-z])'
+                    match = re.search(az_pattern, lt_name)
+                    if match:
+                        az_name = match.group(1)
+                        # Extract index from AZ suffix (a=1, b=2, etc.)
+                        az_suffix = az_name[-1]
+                        if az_suffix.isalpha():
+                            az_index = str(ord(az_suffix.lower()) - ord('a') + 1)
 
             # Get subnet info from launch template
             lt_versions = ec2.describe_launch_template_versions(
@@ -353,7 +361,7 @@ def update_instance_status(
     Args:
         table: DynamoDB table resource
         project: Project name
-        status: Current status ("nonexistent" or "READY")
+        status: Current status ("nonexistent", "READY", or "LAUNCHING")
         instance_id: ID of the EC2 instance
         image_id: AMI ID used for the instance
         instance_info: Optional instance metadata
@@ -387,6 +395,45 @@ def update_instance_status(
                 item["PrivateIp"] = instance_info["PrivateIpAddress"]
             if "PublicIpAddress" in instance_info:
                 item["PublicIp"] = instance_info["PublicIpAddress"]
+
+            table.put_item(Item=item)
+
+        elif status == "LAUNCHING":
+            # Check if project already exists
+            resp = table.get_item(Key={"project": project})
+            existing_item = resp.get("Item", {})
+
+            # Create item with launching status, preserving existing values
+            item = existing_item.copy() if existing_item else {}
+            item.update({
+                "project": project,
+                "Status": "LAUNCHING",
+                "AMI": image_id,
+                "InstanceId": instance_id,
+                "LastUpdated": str(utils.get_utc_now()),
+                "State": "launching"
+            })
+
+            # Add any additional instance info that might be useful
+            if instance_info:
+                if "VirtualizationType" in instance_info:
+                    item["VirtualizationType"] = instance_info["VirtualizationType"]
+                if "Architecture" in instance_info:
+                    item["Architecture"] = instance_info["Architecture"]
+                if "BlockDeviceMappings" in instance_info:
+                    item["VolumeCount"] = len(instance_info["BlockDeviceMappings"])
+                if "RootDeviceName" in instance_info:
+                    item["RootDeviceName"] = instance_info["RootDeviceName"]
+                if "InstanceType" in instance_info:
+                    item["InstanceType"] = instance_info["InstanceType"]
+                if "LaunchTime" in instance_info:
+                    item["LaunchTime"] = str(instance_info["LaunchTime"])
+                if "State" in instance_info:
+                    item["State"] = instance_info["State"].get("Name", "launching")
+                if "PrivateIpAddress" in instance_info:
+                    item["PrivateIp"] = instance_info["PrivateIpAddress"]
+                if "PublicIpAddress" in instance_info:
+                    item["PublicIp"] = instance_info["PublicIpAddress"]
 
             table.put_item(Item=item)
 
@@ -433,7 +480,7 @@ def update_instance_status(
             )
         else:
             raise ValueError(
-                f"Unexpected status: {status} (expected 'nonexistent' or 'READY')"
+                f"Unexpected status: {status} (expected 'nonexistent', 'READY', or 'LAUNCHING')"
             )
 
     except ClientError as e:
@@ -502,16 +549,38 @@ def get_launch_config(aws: Dict[str, Any], param_prefix: str, project: str) -> D
     try:
         # Get launch template IDs from SSM
         lt_param = f"{param_prefix}/launchTemplateIds"
-        lt_resp = get_ssm_parameter(lt_param)
-        lt_ids = json.loads(lt_resp)
+        try:
+            lt_resp = aws["ssm"].get_parameter(Name=lt_param, WithDecryption=True)["Parameter"]["Value"]
+        except Exception as e:
+            raise AWSClientError(f"Failed to retrieve SSM parameter {lt_param}: {str(e)}")
+
+        # Parse JSON to get launch template dictionary
+        import json
+        try:
+            lt_dict = json.loads(lt_resp)
+        except json.JSONDecodeError as e:
+            raise AWSClientError(f"Invalid JSON in SSM parameter {lt_param}: {str(e)}")
+
+        if isinstance(lt_dict, dict):
+            # Handle legacy dictionary format
+            lt_ids = list(lt_dict.values())
+        elif isinstance(lt_dict, list):
+            # Handle current list format from terraform
+            lt_ids = lt_dict
+        else:
+            raise AWSClientError(f"Expected list or dictionary in SSM parameter {lt_param}, got {type(lt_dict)}")
 
         if not lt_ids:
-            raise ResourceNotFoundError(f"No launch template IDs found in {lt_param}")
+            raise ResourceNotFoundError(f"No launch templates found in SSM parameter {lt_param}. Parameter contains: {lt_dict}")
 
         # Get DynamoDB table name from SSM
         table_param = f"{param_prefix}/snapshotTable"
-        table_name = get_ssm_parameter(table_param)
-        table = get_dynamodb_table(table_name)
+        try:
+            table_name = aws["ssm"].get_parameter(Name=table_param, WithDecryption=True)["Parameter"]["Value"]
+        except Exception as e:
+            raise AWSClientError(f"Failed to retrieve SSM parameter {table_param}: {str(e)}")
+
+        table = aws["ddb"].Table(table_name)
 
         # Get project snapshot info
         item, error = get_project_snapshot(table, project)
@@ -524,10 +593,11 @@ def get_launch_config(aws: Dict[str, Any], param_prefix: str, project: str) -> D
             "item": item
         }
 
-    except json.JSONDecodeError as e:
-        raise AWSClientError(f"Invalid JSON in launch template IDs: {str(e)}")
+    except (ResourceNotFoundError, AWSClientError):
+        # Re-raise our custom exceptions without wrapping
+        raise
     except Exception as e:
-        raise AWSClientError(f"Failed to get launch config: {str(e)}") from e
+        raise AWSClientError(f"Unexpected error in get_launch_config: {str(e)}") from e
 
 
 def validate_project_status(item: Dict[str, Any], project: str) -> str:
@@ -543,7 +613,10 @@ def validate_project_status(item: Dict[str, Any], project: str) -> str:
     Raises:
         ValueError: If project status is invalid
     """
-    status = item.get("Status", "nonexistent")
+    if "Status" not in item:
+        raise ValueError(f"Project {project} has no Status field")
+
+    status = item["Status"]
     if status not in ["READY", "nonexistent"]:
         raise ValueError(
             f"Snapshot for project {project} is status {status}. "
@@ -564,10 +637,19 @@ def determine_ami(item: Dict[str, Any], base_ami: Optional[str]) -> str:
 
     Raises:
         ValueError: If no AMI can be determined
-    """
-    restored_ami = item.get("AMI")
 
-    if not restored_ami and not base_ami:
+    Note:
+        Priority order: RestoreAmi > BaseAmi > AMI > base_ami parameter
+        The AMI field is used by lambda functions for storing snapshot AMIs.
+    """
+    restored_ami = item.get("RestoreAmi")
+    base_ami_from_item = item.get("BaseAmi")
+    ami_from_item = item.get("AMI")
+
+    # Priority: RestoreAmi > BaseAmi > AMI from item > base_ami parameter
+    ami_to_use = restored_ami or base_ami_from_item or ami_from_item or base_ami
+
+    if not ami_to_use:
         raise ValueError(
             "No existing snapshot found. Please provide a base AMI with --base-ami "
             "to create a new snapshot."
@@ -576,7 +658,7 @@ def determine_ami(item: Dict[str, Any], base_ami: Optional[str]) -> str:
     if restored_ami and base_ami:
         print("Warning: base AMI is ignored when restoring from existing snapshot")
 
-    return restored_ami if restored_ami else base_ami
+    return ami_to_use
 
 
 def launch_instance_in_azs(
@@ -772,70 +854,22 @@ def launch_programmatic(
 def main() -> None:
     """Main launch function.
 
-    This function orchestrates the process of launching a devbox EC2 instance:
-    1. Parse and validate command line arguments
-    2. Initialize AWS clients
-    3. Get launch configuration and project info
-    4. Validate project status
-    5. Determine which AMI to use
-    6. Get volume and launch template info
-    7. Launch instance in an available AZ
-    8. Update DynamoDB with instance info
-    9. Display connection information
+    This function parses command line arguments and calls launch_programmatic
+    to launch a devbox EC2 instance.
     """
     try:
         # Parse and validate arguments
         args = parse_arguments()
 
-        # Initialize AWS clients
-        aws = initialize_aws_clients()
-
-        # Get launch configuration
-        config = get_launch_config(aws, args.param_prefix, args.project)
-
-        # Validate project status
-        status = validate_project_status(config["item"], args.project)
-
-        # Determine which AMI to use
-        image_id = determine_ami(config["item"], args.base_ami)
-        print(f"Using AMI: {image_id}")
-
-        # Get volume info
-        volumes, _ = get_volume_info(aws["ec2"], image_id, args.volume_size)
-
-        # Get launch template info
-        az_info = get_launch_template_info(aws["ec2"], config["lt_ids"])
-
-        # Launch instance in first available AZ
-        print("Launching instance...")
-        instance, instance_id, instance_info = launch_instance_in_azs(
-            aws=aws,
-            lt_ids=config["lt_ids"],
-            az_info=az_info,
-            image_id=image_id,
-            instance_type=args.instance_type,
-            key_name=args.key_pair,
-            volumes=volumes,
-            project=args.project
-        )
-
-        # Wait for instance to be running
-        print("Waiting for instance to be ready...")
-        instance.wait_until_running()
-        instance.reload()  # Refresh instance attributes
-
-        # Update instance status in DynamoDB
-        update_instance_status(
-            table=config["table"],
+        # Call the programmatic launch function
+        launch_programmatic(
             project=args.project,
-            status=status,
-            instance_id=instance_id,
-            image_id=image_id,
-            instance_info=instance_info,
+            instance_type=args.instance_type,
+            key_pair=args.key_pair,
+            volume_size=args.volume_size,
+            base_ami=args.base_ami,
+            param_prefix=args.param_prefix
         )
-
-        # Display instance information
-        display_instance_info(aws["ec2"], instance_id)
 
     except KeyboardInterrupt:
         print("\nOperation cancelled by user")
@@ -849,7 +883,7 @@ def main() -> None:
             print(f"Error Code: {e.error_code}", file=sys.stderr)
         sys.exit(3)
     except Exception as e:
-        print(f"Error: {str(e)}", file=sys.stderr)
+        print(f"Unexpected error: {str(e)}", file=sys.stderr)
         sys.exit(4)
 
 

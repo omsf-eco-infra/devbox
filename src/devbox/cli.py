@@ -14,11 +14,9 @@ from .console_output import ConsoleOutput
 @click.pass_context
 def cli(ctx):
     """DevBox - AWS EC2 Development Environment Manager."""
-    # Initialize the context object with our manager and console
     ctx.ensure_object(dict)
     ctx.obj['console'] = ConsoleOutput()
 
-    # Initialize DevBoxManager with default AWS clients
     try:
         ctx.obj['manager'] = DevBoxManager()
     except Exception as e:
