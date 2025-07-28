@@ -43,14 +43,14 @@ flowchart LR
   classDef terminatePhase fill:#FDE2E4,stroke:#C62828,stroke-width:2px,color:#4A0F0F;
 
   %% Nodes
-  A["🚀&nbsp;Launch"] --> B["💻&nbsp;Hack&nbsp;Hack&nbsp;Hack"]
+  A[🚀&nbsp;Launch] --> B[💻&nbsp;Hack&nbsp;Hack&nbsp;Hack]
   B --> C["💥&nbsp;Terminate"]
 
   subgraph "Lambda Functions"
-    D["💾&nbsp;Snapshot"] --> E["📦&nbsp;Create&nbsp;AMI"]
-    E --> F["🧹&nbsp;Cleanup"]
-    F --> G["✅&nbsp;Mark&nbsp;Ready"]
-    D --> I["🗑️&nbsp;Delete&nbsp;Volumes]"
+    D[💾&nbsp;Snapshot] --> E[📦&nbsp;Create&nbsp;AMI]
+    E --> F[🧹&nbsp;Cleanup]
+    F --> G[✅&nbsp;Mark&nbsp;Ready]
+    D --> I["🗑️&nbsp;Delete&nbsp;Volumes"]
   end
 
   C --> D
