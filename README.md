@@ -101,13 +101,30 @@ Each user will have to complete these steps once, but this will be reused
 between different DevBox projects.
 
 1. Set up your SSH keys.
-   - Generate a new SSH key pair if you don't have one.
-   - Add the public key to your AWS account's EC2 key pairs.
+   - Generate a new SSH key pair if you don't have one. For example, use
+     `ssh-keygen`.
+   - Add the public key to your AWS account's EC2 key pairs. For example, you
+     can do this with:
+     ```bash
+     aws ec2 import-key-pair \
+      --region us-east-1 \
+      --key-name devbox-key \
+      --public-key-material fileb:///path/to/my/key.pub
+    ```
+
+If you already have a key pair, but don't know the name you gave it on AWS, you
+can get that from:
+
+```bash
+aws ec2 describe-key-pairs --query "KeyPairs[*].KeyName" --output text
+```
 
 
 ## Project Setup
 
 This is for an individual DevBox project.
+
+1. Find the initial AMI
 
 ## Troubleshooting
 
