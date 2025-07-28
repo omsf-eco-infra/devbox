@@ -4,8 +4,11 @@ output "vpc_id" {
 }
 
 output "subnet_ids" {
-  description = "The IDs of the created Subnets"
-  value       = aws_subnet.this[*].id
+  description = "The IDs of the created Subnets, in AZ order"
+  value = [
+    for az in data.aws_availability_zones.available.names :
+    aws_subnet.this[az].id
+  ]
 }
 
 output "ssh_sg_id" {

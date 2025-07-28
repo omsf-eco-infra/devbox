@@ -3,6 +3,12 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+locals {
+  vpc_prefix_len  = tonumber(split("/", var.vpc_cidr)[1])
+  subnet_new_bits = 24 - local.vpc_prefix_len
+  az_names        = data.aws_availability_zones.available.names
+}
+
 resource "aws_vpc" "this" {
   cidr_block = var.vpc_cidr
   tags       = { Name = "${var.name}-vpc" }
@@ -25,17 +31,21 @@ resource "aws_route" "default_route" {
 }
 
 resource "aws_subnet" "this" {
-  count             = length(var.subnet_cidr)
+  for_each          = { for az in local.az_names : az => az }
   vpc_id            = aws_vpc.this.id
-  cidr_block        = var.subnet_cidr[count.index]
-  availability_zone = data.aws_availability_zones.available.names[count.index % length(data.aws_availability_zones.available.names)]
+  availability_zone = each.value
+  cidr_block = cidrsubnet(
+    var.vpc_cidr,
+    local.subnet_new_bits,
+    index(local.az_names, each.value)
+  )
   map_public_ip_on_launch = true
-  tags              = { Name = "${var.name}-subnet-${count.index}" }
+  tags                    = { Name = "${var.name}-subnet-${each.value}" }
 }
 
 resource "aws_route_table_association" "public_assoc" {
-  count          = length(aws_subnet.this)
-  subnet_id      = aws_subnet.this[count.index].id
+  for_each       = aws_subnet.this
+  subnet_id      = each.value.id
   route_table_id = aws_route_table.public.id
 }
 
