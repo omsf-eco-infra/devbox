@@ -53,12 +53,17 @@ resource "aws_ecr_repository" "snapshot_lambda" {
 
 data "aws_region" "current" {}
 
+locals {
+  lambdas_dir = abspath("${path.module}/../../lambdas")
+}
+
+
 resource "null_resource" "build_and_push" {
   provisioner "local-exec" {
     command = <<EOT
 aws ecr get-login-password --region ${data.aws_region.current.name} \
   | docker login --username AWS --password-stdin ${aws_ecr_repository.snapshot_lambda.repository_url}
-docker build --platform linux/amd64 -t snapshot-lambda ./lambdas
+docker build --platform linux/amd64 -t snapshot-lambda ${locals.lambdas_dir}
 docker tag snapshot-lambda:latest ${aws_ecr_repository.snapshot_lambda.repository_url}:latest
 docker push ${aws_ecr_repository.snapshot_lambda.repository_url}:latest
 EOT
