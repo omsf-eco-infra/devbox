@@ -1,5 +1,11 @@
-AWS_REGION="us-east-1"
-REPO_NAME="devbox-lambda-repo"
+if [ -z "$AWS_REGION" ]; then
+    AWS_REGION="us-east-1"
+fi
+
+if [ -z "$REP_NAME" ]; then
+    REPO_NAME="devbox-lambda-repo"
+fi
+
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 aws ecr get-login-password --region $AWS_REGION | \
   docker login --username AWS \
