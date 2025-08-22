@@ -73,7 +73,7 @@ def terminate(ctx, instance_id: str):
 @click.option('--project', required=True, help='Project name')
 @click.option('--instance-type', help='EC2 instance type (uses last instance type if not specified)')
 @click.option('--key-pair', help='SSH key pair name (uses last keypair if not specified)')
-@click.option('--volume-size', type=int, default=100, help='Root volume size in GB')
+@click.option('--volume-size', type=int, default=0, help='Root volume size in GB')
 @click.option('--base-ami', help='Base AMI ID for new instances')
 @click.option('--param-prefix', default='/devbox', help='SSM parameter prefix')
 @click.pass_context
