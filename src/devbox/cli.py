@@ -71,13 +71,13 @@ def terminate(ctx, instance_id: str):
 
 @cli.command()
 @click.option('--project', required=True, help='Project name')
-@click.option('--instance-type', default='t3.medium', help='EC2 instance type')
-@click.option('--key-pair', required=True, help='SSH key pair name')
+@click.option('--instance-type', help='EC2 instance type (uses last instance type if not specified)')
+@click.option('--key-pair', help='SSH key pair name (uses last keypair if not specified)')
 @click.option('--volume-size', type=int, default=100, help='Root volume size in GB')
 @click.option('--base-ami', help='Base AMI ID for new instances')
 @click.option('--param-prefix', default='/devbox', help='SSM parameter prefix')
 @click.pass_context
-def launch(ctx, project: str, instance_type: str, key_pair: str,
+def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[str],
           volume_size: int, base_ami: Optional[str], param_prefix: str):
     """Launch a new DevBox instance."""
     from .launch import launch_programmatic
@@ -95,6 +95,27 @@ def launch(ctx, project: str, instance_type: str, key_pair: str,
         )
     except Exception as e:
         console.print_error(f"Failed to launch instance: {str(e)}")
+        sys.exit(1)
+
+@cli.command()
+@click.option('--project', required=True, help='Project name')
+@click.option('--base-ami', required=True, help='Base AMI ID for the project')
+@click.option('--param-prefix', default='/devbox', help='SSM parameter prefix')
+@click.pass_context
+def new(ctx, project: str, base_ami: str, param_prefix: str):
+    """Create a new DevBox project without launching an instance."""
+    from .new import new_project_programmatic
+
+    console = ctx.obj['console']
+
+    try:
+        new_project_programmatic(
+            project=project,
+            base_ami=base_ami,
+            param_prefix=param_prefix
+        )
+    except Exception as e:
+        console.print_error(f"Failed to create project: {str(e)}")
         sys.exit(1)
 
 def main():

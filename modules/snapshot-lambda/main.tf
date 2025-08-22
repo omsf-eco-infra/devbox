@@ -63,7 +63,7 @@ resource "null_resource" "build_and_push" {
     command = <<EOT
 aws ecr get-login-password --region ${data.aws_region.current.name} \
   | docker login --username AWS --password-stdin ${aws_ecr_repository.snapshot_lambda.repository_url}
-docker build --platform linux/amd64 -t snapshot-lambda ${locals.lambdas_dir}
+docker build --platform linux/amd64 -t snapshot-lambda ${local.lambdas_dir}
 docker tag snapshot-lambda:latest ${aws_ecr_repository.snapshot_lambda.repository_url}:latest
 docker push ${aws_ecr_repository.snapshot_lambda.repository_url}:latest
 EOT

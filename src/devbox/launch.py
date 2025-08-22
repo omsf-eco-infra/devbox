@@ -50,14 +50,14 @@ def make_parser() -> argparse.ArgumentParser:
     required.add_argument("--project",
                          required=True,
                          help="Project name (alphanumeric and hyphens only)")
-    required.add_argument("--instance-type",
-                         required=True,
-                         help="EC2 instance type (e.g., t3.medium, m5.large)")
-    required.add_argument("--key-pair",
-                         required=True,
-                         help="Name of the EC2 Key Pair for SSH access")
+
+
 
     # Optional arguments
+    parser.add_argument("--instance-type",
+                       help="EC2 instance type (e.g., t3.medium, m5.large) (uses last instance type if not specified)")
+    parser.add_argument("--key-pair",
+                       help="Name of the EC2 Key Pair for SSH access (uses last keypair if not specified)")
     parser.add_argument("--base-ami",
                        help="Base AMI ID (only required for new projects)")
     parser.add_argument("--param-prefix",
@@ -354,6 +354,8 @@ def update_instance_status(
     status: str,
     instance_id: str,
     image_id: str,
+    instance_type: str,
+    key_pair: str,
     instance_info: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Update the instance status in DynamoDB.
@@ -364,6 +366,8 @@ def update_instance_status(
         status: Current status ("nonexistent", "READY", or "LAUNCHING")
         instance_id: ID of the EC2 instance
         image_id: AMI ID used for the instance
+        instance_type: EC2 instance type used for the instance
+        key_pair: Name of the EC2 Key Pair used for SSH access
         instance_info: Optional instance metadata
 
     Raises:
@@ -378,6 +382,8 @@ def update_instance_status(
                 "Status": "RUNNING",
                 "AMI": image_id,
                 "InstanceId": instance_id,
+                "LastInstanceType": instance_type,
+                "LastKeyPair": key_pair,
                 "VirtualizationType": instance_info.get("VirtualizationType"),
                 "Architecture": instance_info.get("Architecture"),
                 "VolumeCount": len(instance_info.get("BlockDeviceMappings", [])),
@@ -410,6 +416,8 @@ def update_instance_status(
                 "Status": "LAUNCHING",
                 "AMI": image_id,
                 "InstanceId": instance_id,
+                "LastInstanceType": instance_type,
+                "LastKeyPair": key_pair,
                 "LastUpdated": str(utils.get_utc_now()),
                 "State": "launching"
             })
@@ -443,6 +451,8 @@ def update_instance_status(
                 SET #s = :s,
                     InstanceId = :instance_id,
                     AMI = :ami,
+                    LastInstanceType = :last_instance_type,
+                    LastKeyPair = :last_key_pair,
                     LastUpdated = :now,
                     #st = :state
             """
@@ -456,6 +466,8 @@ def update_instance_status(
                 ":s": "RUNNING",
                 ":instance_id": instance_id,
                 ":ami": image_id,
+                ":last_instance_type": instance_type,
+                ":last_key_pair": key_pair,
                 ":now": str(utils.get_utc_now()),
                 ":state": "running"
             }
@@ -762,8 +774,8 @@ def display_instance_info(ec2: Any, instance_id: str) -> None:
 
 def launch_programmatic(
     project: str,
-    instance_type: str,
-    key_pair: str,
+    instance_type: Optional[str] = None,
+    key_pair: Optional[str] = None,
     volume_size: int = 0,
     base_ami: Optional[str] = None,
     param_prefix: str = "/devbox"
@@ -772,8 +784,8 @@ def launch_programmatic(
 
     Args:
         project: Project name (alphanumeric and hyphens only)
-        instance_type: EC2 instance type (e.g., t3.medium, m5.large)
-        key_pair: Name of the EC2 Key Pair for SSH access
+        instance_type: EC2 instance type (e.g., t3.medium, m5.large) (uses last instance type if None)
+        key_pair: Name of the EC2 Key Pair for SSH access (uses last keypair if None)
         volume_size: Minimum size (GiB) for the root EBS volume
         base_ami: Base AMI ID (only required for new projects)
         param_prefix: Prefix for AWS Systems Manager Parameter Store keys
@@ -793,6 +805,28 @@ def launch_programmatic(
 
         # Validate project status
         status = validate_project_status(config["item"], project)
+
+        # Determine which instance type to use
+        if instance_type is None:
+            last_instance_type = config["item"].get("LastInstanceType")
+            if last_instance_type:
+                instance_type = last_instance_type
+                print(f"Using last instance type: {instance_type}")
+            else:
+                raise ValueError("No instance type specified and no previous instance type found for this project")
+        else:
+            print(f"Using specified instance type: {instance_type}")
+
+        # Determine which key pair to use
+        if key_pair is None:
+            last_key_pair = config["item"].get("LastKeyPair")
+            if last_key_pair:
+                key_pair = last_key_pair
+                print(f"Using last keypair: {key_pair}")
+            else:
+                raise ValueError("No key pair specified and no previous keypair found for this project")
+        else:
+            print(f"Using specified keypair: {key_pair}")
 
         # Determine which AMI to use
         image_id = determine_ami(config["item"], base_ami)
@@ -829,6 +863,8 @@ def launch_programmatic(
             status=status,
             instance_id=instance_id,
             image_id=image_id,
+            instance_type=instance_type,
+            key_pair=key_pair,
             instance_info=instance_info,
         )
 

@@ -6,6 +6,7 @@ terraform {
     }
   }
 }
+
 module "vpc" {
   source          = "./modules/vpc"
   name            = var.prefix

@@ -44,6 +44,8 @@ def create_snapshots(event, context):
         "RootDeviceName": instance.root_device_name,
         "Architecture": instance.architecture,
         "VirtualizationType": instance.virtualization_type,
+        "LastInstanceType": instance.instance_type,
+        "LastKeyPair": instance.key_name,
     })
 
     for vol in vols:
