@@ -70,7 +70,7 @@ def terminate(ctx, instance_id: str):
         sys.exit(1)
 
 @cli.command()
-@click.option('--project', required=True, help='Project name')
+@click.argument('project')
 @click.option('--instance-type', help='EC2 instance type (uses last instance type if not specified)')
 @click.option('--key-pair', help='SSH key pair name (uses last keypair if not specified)')
 @click.option('--volume-size', type=int, default=0, help='Root volume size in GB')
@@ -79,7 +79,10 @@ def terminate(ctx, instance_id: str):
 @click.pass_context
 def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[str],
           volume_size: int, base_ami: Optional[str], param_prefix: str):
-    """Launch a new DevBox instance."""
+    """Launch a new DevBox instance.
+
+    PROJECT is the name of the project to launch.
+    """
     from .launch import launch_programmatic
 
     console = ctx.obj['console']
@@ -98,12 +101,15 @@ def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[s
         sys.exit(1)
 
 @cli.command()
-@click.option('--project', required=True, help='Project name')
+@click.argument('project')
 @click.option('--base-ami', required=True, help='Base AMI ID for the project')
 @click.option('--param-prefix', default='/devbox', help='SSM parameter prefix')
 @click.pass_context
 def new(ctx, project: str, base_ami: str, param_prefix: str):
-    """Create a new DevBox project without launching an instance."""
+    """Create a new DevBox project without launching an instance.
+
+    PROJECT is the name of the project to create.
+    """
     from .new import new_project_programmatic
 
     console = ctx.obj['console']

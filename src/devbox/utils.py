@@ -119,6 +119,57 @@ def get_utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def determine_ssh_username(ami_name: str = "", ami_description: str = "") -> str:
+    """Determine the SSH username for an AMI based on its name and description.
+
+    Args:
+        ami_name: The AMI name
+        ami_description: The AMI description
+
+    Returns:
+        The likely SSH username, or empty string if unknown
+    """
+    # Convert to lowercase for case-insensitive matching
+    name_lower = ami_name.lower()
+    desc_lower = ami_description.lower()
+    combined = f"{name_lower} {desc_lower}".strip()
+
+    # Amazon Linux patterns
+    if any(pattern in combined for pattern in ['amazon', 'amzn', 'al2', 'amazonlinux']):
+        return "ec2-user"
+
+    # Ubuntu patterns
+    if 'ubuntu' in combined:
+        return "ubuntu"
+
+    # RHEL patterns
+    if any(pattern in combined for pattern in ['rhel', 'red hat']):
+        return "ec2-user"
+
+    # CentOS patterns
+    if 'centos' in combined:
+        return "centos"
+
+    # Debian patterns
+    if 'debian' in combined:
+        return "admin"
+
+    # SUSE patterns
+    if any(pattern in combined for pattern in ['suse', 'sles']):
+        return "ec2-user"
+
+    # Rocky Linux patterns
+    if 'rocky' in combined:
+        return "rocky"
+
+    # AlmaLinux patterns
+    if 'alma' in combined:
+        return "almalinux"
+
+    # Default to empty string if we can't determine
+    return ""
+
+
 class DevBoxError(Exception):
     """Base exception for devbox operations."""
     pass

@@ -18,6 +18,7 @@ from .utils import (
     get_dynamodb_resource,
     get_dynamodb_table,
     get_ssm_parameter,
+    determine_ssh_username,
     ResourceNotFoundError,
     AWSClientError
 )
@@ -391,7 +392,8 @@ def update_instance_status(
                 "InstanceType": instance_info.get("InstanceType"),
                 "LaunchTime": str(instance_info.get("LaunchTime", "")),
                 "LastUpdated": str(utils.get_utc_now()),
-                "State": "running"
+                "State": "running",
+                "Username": ""  # Will be determined later when we have AMI info
             }
 
             # Add any additional instance info that might be useful
@@ -419,7 +421,8 @@ def update_instance_status(
                 "LastInstanceType": instance_type,
                 "LastKeyPair": key_pair,
                 "LastUpdated": str(utils.get_utc_now()),
-                "State": "launching"
+                "State": "launching",
+                "Username": existing_item.get("Username", "")  # Preserve existing username
             })
 
             # Add any additional instance info that might be useful
@@ -734,12 +737,14 @@ def launch_instance_in_azs(
     raise RuntimeError(error_msg)
 
 
-def display_instance_info(ec2: Any, instance_id: str) -> None:
+def display_instance_info(ec2: Any, instance_id: str, project: str, table: Any) -> None:
     """Display information about the launched instance.
 
     Args:
         ec2: EC2 client
         instance_id: ID of the instance to describe
+        project: Project name for username lookup
+        table: DynamoDB table resource
     """
     try:
         desc = ec2.describe_instances(InstanceIds=[instance_id])
@@ -763,8 +768,50 @@ def display_instance_info(ec2: Any, instance_id: str) -> None:
         public_ip = instance.get('PublicIpAddress')
         if public_ip:
             print(f"{'Public IP:':<20} {public_ip}")
+
+            # Get SSH username from DynamoDB, determine if needed
+            username = "ec2-user"  # default fallback
+            try:
+                resp = table.get_item(Key={"project": project})
+                if "Item" in resp:
+                    db_username = resp["Item"].get("Username", "")
+                    if db_username:
+                        username = db_username
+                    else:
+                        # Determine username from current AMI if not stored
+                        ami_id = resp["Item"].get("AMI", "")
+                        if ami_id:
+                            try:
+                                ami_resp = ec2.describe_images(ImageIds=[ami_id])
+                                if ami_resp.get("Images"):
+                                    ami = ami_resp["Images"][0]
+                                    ami_name = ami.get("Name", "")
+                                    ami_description = ami.get("Description", "")
+                                    determined_username = determine_ssh_username(ami_name, ami_description)
+                                    if determined_username:
+                                        username = determined_username
+                                        # Update DynamoDB with determined username
+                                        table.update_item(
+                                            Key={"project": project},
+                                            UpdateExpression="SET Username = :u",
+                                            ExpressionAttributeValues={":u": username}
+                                        )
+                                    else:
+                                        username = "<username>"  # placeholder for unknown
+                            except Exception:
+                                username = "<username>"
+                        else:
+                            username = "<username>"
+            except Exception as e:
+                print(f"Warning: Could not retrieve SSH username from database: {e}")
+                username = "<username>"
+
             print("\nYou can SSH into the instance using:")
-            print(f"ssh -i /path/to/your-key.pem ec2-user@{public_ip}")
+            print(f"ssh -i /path/to/your-key.pem {username}@{public_ip}")
+
+            if username == "<username>":
+                print("Note: Replace <username> with the appropriate user for your AMI")
+                print("      (common values: ec2-user, ubuntu, admin, centos, etc.)")
 
         print("\n" + "="*50 + "\n")
 
@@ -856,6 +903,29 @@ def launch_programmatic(
         instance.wait_until_running()
         instance.reload()  # Refresh instance attributes
 
+        # Determine and update SSH username if not already set
+        try:
+            resp = config["table"].get_item(Key={"project": project})
+            if "Item" in resp:
+                existing_username = resp["Item"].get("Username", "")
+                if not existing_username:
+                    # Determine username from AMI
+                    ami_resp = aws["ec2"].describe_images(ImageIds=[image_id])
+                    if ami_resp.get("Images"):
+                        ami = ami_resp["Images"][0]
+                        ami_name = ami.get("Name", "")
+                        ami_description = ami.get("Description", "")
+                        determined_username = determine_ssh_username(ami_name, ami_description)
+                        if determined_username:
+                            print(f"Determined SSH username: {determined_username}")
+                            config["table"].update_item(
+                                Key={"project": project},
+                                UpdateExpression="SET Username = :u",
+                                ExpressionAttributeValues={":u": determined_username}
+                            )
+        except Exception as e:
+            print(f"Warning: Could not determine SSH username: {e}")
+
         # Update instance status in DynamoDB
         update_instance_status(
             table=config["table"],
@@ -869,7 +939,7 @@ def launch_programmatic(
         )
 
         # Display instance information
-        display_instance_info(aws["ec2"], instance_id)
+        display_instance_info(aws["ec2"], instance_id, project, config["table"])
 
     except KeyboardInterrupt:
         print("\nOperation cancelled by user")

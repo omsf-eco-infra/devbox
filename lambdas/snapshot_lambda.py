@@ -12,6 +12,8 @@ META_TABLE = os.environ["META_TABLE"]
 main_tbl   = dynamodb.Table(MAIN_TABLE)
 meta_tbl   = dynamodb.Table(META_TABLE)
 
+
+
 def create_snapshots(event, context):
     # triggered by EC2 instance shutting down
     detail      = event.get("detail", {})
@@ -36,6 +38,15 @@ def create_snapshots(event, context):
         print("No volumes attached; nothing to snapshot.")
         return
 
+    # Check for existing username in DynamoDB, preserve it if exists
+    username = ""
+    try:
+        existing_resp = main_tbl.get_item(Key={"project": project})
+        if "Item" in existing_resp:
+            username = existing_resp["Item"].get("Username", "")
+    except Exception as e:
+        print(f"[create_snapshots] Could not retrieve existing username for project {project}: {e}")
+
     main_tbl.put_item(Item={
         "project":     project,
         "VolumeCount": vol_count,
@@ -46,6 +57,7 @@ def create_snapshots(event, context):
         "VirtualizationType": instance.virtualization_type,
         "LastInstanceType": instance.instance_type,
         "LastKeyPair": instance.key_name,
+        "Username": username,
     })
 
     for vol in vols:
