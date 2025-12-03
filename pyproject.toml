@@ -46,8 +46,8 @@ python_files = ["test_*.py"]
 addopts = "-v"
 
 #[project.urls]
-#"Homepage" = "https://github.com/yourusername/devbox"
-#"Bug Tracker" = "https://github.com/yourusername/devbox/issues"
+#"Homepage" = "https://github.com/omsf/devbox"
+#"Bug Tracker" = "https://github.com/omsf/devbox/issues"
 
 [tool.pixi.project]
 channels = ["conda-forge"]
