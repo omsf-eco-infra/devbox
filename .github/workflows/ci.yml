@@ -29,8 +29,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          echo "TODO"
-          python -m pip install pytest pytest-cov
+          python -m pip install ".[dev]"
 
       - name: Run tests
         run: pytest --cov=. --cov-report=xml
