@@ -2,7 +2,7 @@ if [ -z "$AWS_REGION" ]; then
     AWS_REGION="us-east-1"
 fi
 
-if [ -z "$REP_NAME" ]; then
+if [ -z "$REPO_NAME" ]; then
     REPO_NAME="devbox-lambda-repo"
 fi
 
