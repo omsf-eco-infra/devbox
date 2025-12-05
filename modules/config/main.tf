@@ -1,6 +1,24 @@
+terraform {
+  required_providers {
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 4.0"
+    }
+  }
+}
+
 locals {
   dns_enabled    = var.dns_provider != "none"
   use_cloudflare = var.dns_provider == "cloudflare"
+}
+
+data "cloudflare_zone" "selected" {
+  count = local.use_cloudflare ? 1 : 0
+  name  = var.dns_zone
+}
+
+locals {
+  cloudflare_zone_id = local.use_cloudflare ? data.cloudflare_zone.selected[0].id : null
 }
 
 resource "aws_ssm_parameter" "launch_template" {
@@ -73,13 +91,6 @@ resource "aws_ssm_parameter" "cloudflare_zone_id" {
   name        = "${var.param_prefix}/secrets/cloudflare/zoneId"
   description = "Cloudflare zone ID for devbox DNS management"
   type        = "SecureString"
-  value       = var.cloudflare_zone_id
+  value       = local.cloudflare_zone_id
   overwrite   = true
-
-  lifecycle {
-    precondition {
-      condition     = length(trimspace(var.cloudflare_zone_id)) > 0
-      error_message = "cloudflare_zone_id must be set when dns_provider is \"cloudflare\"."
-    }
-  }
 }

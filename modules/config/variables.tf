@@ -29,17 +29,12 @@ variable "dns_zone" {
   description = "DNS zone name used for devbox instance CNAME records"
   type        = string
   default     = ""
+
+
 }
 
 variable "cloudflare_api_token" {
   description = "Cloudflare API token used for DNS management"
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
-variable "cloudflare_zone_id" {
-  description = "Cloudflare zone ID used for DNS management"
   type        = string
   default     = ""
   sensitive   = true

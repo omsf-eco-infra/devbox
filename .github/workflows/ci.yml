@@ -35,6 +35,7 @@ jobs:
         run: pytest --cov=. --cov-report=xml
 
       - name: Upload coverage to Codecov
+        if: {{ github.repository == 'omsf-eco-infra/devbox' }}
         uses: codecov/codecov-action@v4
         with:
           files: ./coverage.xml
