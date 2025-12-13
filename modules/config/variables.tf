@@ -30,7 +30,6 @@ variable "dns_zone" {
   type        = string
   default     = ""
 
-
 }
 
 variable "cloudflare_api_token" {

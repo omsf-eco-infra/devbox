@@ -12,6 +12,8 @@ import requests
 from botocore.client import BaseClient
 from botocore.exceptions import ClientError
 
+from . import utils
+
 DEFAULT_TTL = 300
 LOG = logging.getLogger(__name__)
 
@@ -248,6 +250,75 @@ class DNSManager:
 
     def __init__(self, provider: Optional[DNSProvider]) -> None:
         self.provider = provider
+
+    @classmethod
+    def from_ssm(
+        cls,
+        param_prefix: str = "/devbox",
+        *,
+        ssm_client: Optional[BaseClient] = None,
+        route53_client: Optional[BaseClient] = None,
+        http_session: Optional[requests.Session] = None,
+    ) -> "DNSManager":
+        """Create a DNSManager configured from SSM parameters."""
+        ssm = ssm_client or utils.get_ssm_client()
+
+        def _get_parameter(name: str, required: bool = True) -> Optional[str]:
+            try:
+                response = ssm.get_parameter(Name=name, WithDecryption=True)
+                value = response.get("Parameter", {}).get("Value", "")
+                return value.strip()
+            except (ClientError, KeyError) as exc:
+                log = LOG.warning if required else LOG.info
+                log("Unable to read SSM parameter %s: %s", name, exc)
+                return None
+
+        provider_param = f"{param_prefix}/dns/provider"
+        provider = (_get_parameter(provider_param, required=False) or "").lower()
+        if not provider or provider == "none":
+            LOG.info("DNS provider not configured (value: %s); DNS disabled", provider or "unset")
+            return cls(None)
+
+        zone_name_param = f"{param_prefix}/dns/zone"
+        zone_name = _get_parameter(zone_name_param)
+        if not zone_name:
+            LOG.warning("DNS zone parameter %s missing; DNS disabled", zone_name_param)
+            return cls(None)
+        zone_name = zone_name.rstrip(".")
+
+        if provider == "cloudflare":
+            api_token = _get_parameter(f"{param_prefix}/secrets/cloudflare/apiToken")
+            zone_id = _get_parameter(f"{param_prefix}/secrets/cloudflare/zoneId")
+
+            if not api_token or not zone_id:
+                LOG.warning("Cloudflare configuration incomplete; DNS disabled")
+                return cls(None)
+
+            provider_impl = CloudflareProvider(
+                api_token=api_token,
+                zone_id=zone_id,
+                zone_name=zone_name,
+                session=http_session,
+            )
+            return cls(provider_impl)
+
+        if provider == "route53":
+            route53 = route53_client or boto3.client("route53")
+            zone_id_param = f"{param_prefix}/dns/route53/zoneId"
+            zone_id = _get_parameter(zone_id_param)
+            if not zone_id:
+                LOG.warning("Route53 hosted zone ID missing for zone %s; DNS disabled", zone_name)
+                return cls(None)
+
+            provider_impl = Route53Provider(
+                zone_id=zone_id,
+                zone_name=zone_name,
+                client=route53,
+            )
+            return cls(provider_impl)
+
+        LOG.warning("Unknown DNS provider '%s'; DNS disabled", provider)
+        return cls(None)
 
     def sanitize_dns_name(self, project: str, custom_subdomain: Optional[str] = None) -> str:
         """Return a DNS-safe subdomain."""

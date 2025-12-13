@@ -245,3 +245,69 @@ class TestDNSManager:
 
         assert manager.remove_cname_for_project("My_Project") is True
         assert provider.deleted == ["my-project"]
+
+
+class TestDNSManagerFromSSM:
+    @mock_aws
+    def test_from_ssm_returns_disabled_when_provider_none(self):
+        ssm = boto3.client("ssm", region_name="us-east-1")
+        ssm.put_parameter(
+            Name="/devbox/dns/provider",
+            Value="none",
+            Type="String",
+        )
+
+        manager = DNSManager.from_ssm(param_prefix="/devbox", ssm_client=ssm)
+
+        assert manager.provider is None
+
+    @mock_aws
+    def test_from_ssm_builds_cloudflare_provider(self):
+        ssm = boto3.client("ssm", region_name="us-east-1")
+        ssm.put_parameter(Name="/devbox/dns/provider", Value="cloudflare", Type="String")
+        ssm.put_parameter(Name="/devbox/dns/zone", Value="example.com", Type="String")
+        ssm.put_parameter(
+            Name="/devbox/secrets/cloudflare/apiToken",
+            Value="token",
+            Type="SecureString",
+        )
+        ssm.put_parameter(
+            Name="/devbox/secrets/cloudflare/zoneId",
+            Value="zone-123",
+            Type="SecureString",
+        )
+        fake_session = FakeSession([])
+
+        manager = DNSManager.from_ssm(
+            param_prefix="/devbox",
+            ssm_client=ssm,
+            http_session=fake_session,
+        )
+
+        assert isinstance(manager.provider, CloudflareProvider)
+        assert manager.provider.zone_id == "zone-123"
+        assert manager.provider.zone_name == "example.com"
+
+    @mock_aws
+    def test_from_ssm_builds_route53_provider(self):
+        ssm = boto3.client("ssm", region_name="us-east-1")
+        ssm.put_parameter(Name="/devbox/dns/provider", Value="route53", Type="String")
+        ssm.put_parameter(Name="/devbox/dns/zone", Value="example.com", Type="String")
+
+        route53 = boto3.client("route53", region_name="us-east-1")
+        hosted_zone = route53.create_hosted_zone(Name="example.com", CallerReference="test")
+        expected_zone_id = hosted_zone["HostedZone"]["Id"].split("/")[-1]
+        ssm.put_parameter(
+            Name="/devbox/dns/route53/zoneId",
+            Value=expected_zone_id,
+            Type="String",
+        )
+
+        manager = DNSManager.from_ssm(
+            param_prefix="/devbox",
+            ssm_client=ssm,
+            route53_client=route53,
+        )
+
+        assert isinstance(manager.provider, Route53Provider)
+        assert manager.provider.zone_id == expected_zone_id
