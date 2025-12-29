@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 import json
 import logging
 import time
@@ -25,9 +26,17 @@ class SnapshotConfig:
     cleanup_wait_seconds: int = 5
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        if value % 1 == 0:
+            return int(value)
+        return float(value)
+    return str(value)
+
+
 def _log(level: int, message: str, **fields: Any) -> None:
     payload = {"message": message, **fields}
-    logger.log(level, json.dumps(payload, sort_keys=True))
+    logger.log(level, json.dumps(payload, sort_keys=True, default=_json_default))
 
 
 def _log_info(message: str, **fields: Any) -> None:
