@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
-import json
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -26,31 +24,6 @@ class SnapshotConfig:
     cleanup_wait_seconds: int = 5
 
 
-def _json_default(value: Any) -> Any:
-    if isinstance(value, Decimal):
-        if value % 1 == 0:
-            return int(value)
-        return float(value)
-    return str(value)
-
-
-def _log(level: int, message: str, **fields: Any) -> None:
-    payload = {"message": message, **fields}
-    logger.log(level, json.dumps(payload, sort_keys=True, default=_json_default))
-
-
-def _log_info(message: str, **fields: Any) -> None:
-    _log(logging.INFO, message, **fields)
-
-
-def _log_warning(message: str, **fields: Any) -> None:
-    _log(logging.WARNING, message, **fields)
-
-
-def _log_error(message: str, **fields: Any) -> None:
-    _log(logging.ERROR, message, **fields)
-
-
 def create_snapshots(
     event: Dict[str, Any],
     *,
@@ -69,21 +42,23 @@ def create_snapshots(
         return
 
     if not instance_id:
-        _log_warning("missing instance id in shutdown event")
+        logger.warning("missing instance id in shutdown event")
         return
 
     instance = ec2_resource.Instance(instance_id)
     project = get_project_tag(instance.tags or [])
     if not project:
-        _log_warning("instance missing project tag", instance_id=instance_id)
+        logger.warning("instance missing project tag instance_id=%s", instance_id)
         return
 
-    _log_info("creating snapshots", instance_id=instance_id, project=project)
+    logger.info(
+        "creating snapshots instance_id=%s project=%s", instance_id, project
+    )
 
     vols = list(instance.volumes.all())
     vol_count = len(vols)
     if vol_count == 0:
-        _log_info("no volumes attached; nothing to snapshot", project=project)
+        logger.info("no volumes attached; nothing to snapshot project=%s", project)
         return
 
     username = ""
@@ -92,10 +67,10 @@ def create_snapshots(
         if "Item" in existing_resp:
             username = existing_resp["Item"].get("Username", "")
     except Exception as exc:
-        _log_warning(
-            "failed to retrieve existing username",
-            project=project,
-            error=str(exc),
+        logger.warning(
+            "failed to retrieve existing username project=%s error=%s",
+            project,
+            exc,
         )
 
     main_table.put_item(
@@ -116,11 +91,11 @@ def create_snapshots(
     for vol in vols:
         vol_id = vol.id
         snap = vol.create_snapshot(Description=f"{project}-{vol_id}")
-        _log_info(
-            "creating snapshot",
-            snapshot_id=snap.snapshot_id,
-            volume_id=vol_id,
-            project=project,
+        logger.info(
+            "creating snapshot snapshot_id=%s volume_id=%s project=%s",
+            snap.snapshot_id,
+            vol_id,
+            project,
         )
         snap.create_tags(
             Tags=[
@@ -148,7 +123,9 @@ def create_snapshots(
             }
         )
 
-    _log_info("snapshot creation complete", project=project, volume_count=vol_count)
+    logger.info(
+        "snapshot creation complete project=%s volume_count=%s", project, vol_count
+    )
 
 
 def cleanup_ami_and_snapshots(
@@ -170,35 +147,39 @@ def cleanup_ami_and_snapshots(
         if snap:
             snapshot_ids.append(snap)
 
-    _log_info("ami backed by snapshots", ami_id=ami_id, snapshot_ids=snapshot_ids)
+    logger.info(
+        "ami backed by snapshots ami_id=%s snapshot_ids=%s", ami_id, snapshot_ids
+    )
 
-    _log_info("deregistering ami", ami_id=ami_id)
+    logger.info("deregistering ami ami_id=%s", ami_id)
     image.deregister()
 
     for snap_id in snapshot_ids:
         snap = ec2_resource.Snapshot(snap_id)
         try:
-            _log_info("deleting snapshot", snapshot_id=snap_id)
+            logger.info("deleting snapshot snapshot_id=%s", snap_id)
             snap.delete()
         except Exception as exc:
-            _log_warning(
-                "failed to delete snapshot", snapshot_id=snap_id, error=str(exc)
+            logger.warning(
+                "failed to delete snapshot snapshot_id=%s error=%s", snap_id, exc
             )
 
-    _log_info("waiting for ami to vanish", ami_id=ami_id)
+    logger.info("waiting for ami to vanish ami_id=%s", ami_id)
     for _ in range(config.cleanup_max_attempts):
         time.sleep(config.cleanup_wait_seconds)
         resp = ec2_client.describe_images(ImageIds=[ami_id])
         images = resp.get("Images", [])
 
         if not images:
-            _log_info("ami no longer exists", ami_id=ami_id)
+            logger.info("ami no longer exists ami_id=%s", ami_id)
             break
-        _log_info("ami still present", ami_id=ami_id, image_count=len(images))
+        logger.info(
+            "ami still present ami_id=%s image_count=%s", ami_id, len(images)
+        )
     else:
         raise RuntimeError(f"Timed out waiting for AMI '{ami_id}' to deregister")
 
-    _log_info("cleanup complete", ami_id=ami_id)
+    logger.info("cleanup complete ami_id=%s", ami_id)
 
 
 def create_image(
@@ -220,7 +201,7 @@ def create_image(
         return
 
     if not snap_arn:
-        _log_warning("no snapshot arn in event")
+        logger.warning("no snapshot arn in event")
         return
 
     snap_id = snap_arn.split("/")[-1]
@@ -231,7 +212,7 @@ def create_image(
     )
     items = resp.get("Items", [])
     if not items:
-        _log_warning("no meta entry found for snapshot", snapshot_id=snap_id)
+        logger.warning("no meta entry found for snapshot snapshot_id=%s", snap_id)
         return
 
     if len(items) != 1:
@@ -244,13 +225,13 @@ def create_image(
     volume_id = meta_item["volumeId"]
     inst_id = meta_item["instanceId"]
     root_dev = meta_item["deviceName"]
-    _log_info(
-        "snapshot completed",
-        snapshot_id=snap_id,
-        project=project,
-        volume_id=volume_id,
-        instance_id=inst_id,
-        device_name=root_dev,
+    logger.info(
+        "snapshot completed snapshot_id=%s project=%s volume_id=%s instance_id=%s device_name=%s",
+        snap_id,
+        project,
+        volume_id,
+        inst_id,
+        root_dev,
     )
 
     meta_table.update_item(
@@ -263,7 +244,7 @@ def create_image(
     main_resp = main_table.get_item(Key={"project": project})
     main_item = main_resp.get("Item")
     if not main_item:
-        _log_warning("no main entry found", project=project)
+        logger.warning("no main entry found project=%s", project)
         return
 
     virtualization_type = main_item.get("VirtualizationType")
@@ -274,7 +255,12 @@ def create_image(
     required = main_item["VolumeCount"]
     done = sum((m.get("State") == "COMPLETED") for m in all_meta)
 
-    _log_info("snapshot completion progress", project=project, done=done, total=required)
+    logger.info(
+        "snapshot completion progress project=%s done=%s total=%s",
+        project,
+        done,
+        required,
+    )
     if done < required:
         return
 
@@ -303,13 +289,13 @@ def create_image(
     if old_ami:
         desc = ec2_client.describe_images(ImageIds=[old_ami])["Images"]
         if not desc:
-            _log_warning("old ami not found", ami_id=old_ami)
+            logger.warning("old ami not found ami_id=%s", old_ami)
             return
 
         image = desc[0]
         tags = {t["Key"]: t["Value"] for t in image.get("Tags", [])}
         if tags.get("ManagedBy") == config.managed_by_tag:
-            _log_info("cleaning up old ami", ami_id=old_ami, project=project)
+            logger.info("cleaning up old ami ami_id=%s project=%s", old_ami, project)
             cleanup_ami_and_snapshots(
                 old_ami,
                 ec2_resource=ec2_resource,
@@ -317,7 +303,11 @@ def create_image(
                 config=config,
             )
         else:
-            _log_info("old ami not managed by devbox", ami_id=old_ami, project=project)
+            logger.info(
+                "old ami not managed by devbox ami_id=%s project=%s",
+                old_ami,
+                project,
+            )
 
     image_resp = ec2_client.register_image(
         Name=f"{project}-ami",
@@ -336,7 +326,7 @@ def create_image(
         ],
     )
     new_ami = image_resp["ImageId"]
-    _log_info("registered new ami", ami_id=new_ami, project=project)
+    logger.info("registered new ami ami_id=%s project=%s", new_ami, project)
 
     main_table.update_item(
         Key={"project": project},
@@ -361,17 +351,17 @@ def mark_ready(
         return
 
     if not ami_id:
-        _log_warning("missing ami id in event")
+        logger.warning("missing ami id in event")
         return
 
     resp = main_table.scan(FilterExpression=Attr("AMI").eq(ami_id))
     items = resp.get("Items", [])
     if not items:
-        _log_warning("no main entry found for ami", ami_id=ami_id)
+        logger.warning("no main entry found for ami ami_id=%s", ami_id)
         return
 
     project = items[0]["project"]
-    _log_info("marking project ready", project=project, ami_id=ami_id)
+    logger.info("marking project ready project=%s ami_id=%s", project, ami_id)
 
     scan_resp = meta_table.query(KeyConditionExpression=Key("project").eq(project))
     meta_items = scan_resp.get("Items", [])
@@ -379,13 +369,13 @@ def mark_ready(
         vol_id = meta_item["volumeId"]
         try:
             meta_table.delete_item(Key={"project": project, "volumeId": vol_id})
-            _log_info("deleted meta row", project=project, volume_id=vol_id)
+            logger.info("deleted meta row project=%s volume_id=%s", project, vol_id)
         except Exception as exc:
-            _log_warning(
-                "failed to delete meta row",
-                project=project,
-                volume_id=vol_id,
-                error=str(exc),
+            logger.warning(
+                "failed to delete meta row project=%s volume_id=%s error=%s",
+                project,
+                vol_id,
+                exc,
             )
 
     main_table.update_item(
@@ -412,13 +402,13 @@ def delete_volume(
         return
 
     if not vol_id:
-        _log_warning("missing volume id in event")
+        logger.warning("missing volume id in event")
         return
 
     resp = meta_table.scan(FilterExpression=Attr("volumeId").eq(vol_id))
     items = resp.get("Items", [])
     if not items:
-        _log_info("volume not found in meta", volume_id=vol_id)
+        logger.info("volume not found in meta volume_id=%s", vol_id)
         return
 
     meta_item = items[0]
@@ -426,17 +416,17 @@ def delete_volume(
     state_tag = meta_item["State"]
 
     if state_tag == "COMPLETED":
-        _log_info("deleting detached volume", volume_id=vol_id, project=project)
+        logger.info("deleting detached volume volume_id=%s project=%s", vol_id, project)
         try:
             ec2_client.delete_volume(VolumeId=vol_id)
         except ClientError as exc:
-            _log_error("error deleting volume", volume_id=vol_id, error=str(exc))
+            logger.error("error deleting volume volume_id=%s error=%s", vol_id, exc)
         return
 
-    _log_warning(
-        "volume not snapshotted; marking error",
-        volume_id=vol_id,
-        project=project,
+    logger.warning(
+        "volume not snapshotted; marking error volume_id=%s project=%s",
+        vol_id,
+        project,
     )
     main_table.update_item(
         Key={"project": project},
