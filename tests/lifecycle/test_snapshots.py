@@ -1,0 +1,246 @@
+"""Tests for snapshot lifecycle handlers."""
+from __future__ import annotations
+
+from typing import Any, Dict, Tuple
+
+import boto3
+import pytest
+from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
+from moto import mock_aws
+
+from devbox.lifecycle import snapshots
+
+
+def _create_tables(dynamodb) -> Tuple[Any, Any]:
+    main_table = dynamodb.create_table(
+        TableName="main-table",
+        KeySchema=[{"AttributeName": "project", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "project", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    meta_table = dynamodb.create_table(
+        TableName="meta-table",
+        KeySchema=[
+            {"AttributeName": "project", "KeyType": "HASH"},
+            {"AttributeName": "volumeId", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "project", "AttributeType": "S"},
+            {"AttributeName": "volumeId", "AttributeType": "S"},
+            {"AttributeName": "snapshotId", "AttributeType": "S"},
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "SnapshotIndex",
+                "KeySchema": [{"AttributeName": "snapshotId", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            }
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    main_table.wait_until_exists()
+    meta_table.wait_until_exists()
+    return main_table, meta_table
+
+
+def _register_image(ec2_client) -> str:
+    resp = ec2_client.register_image(
+        Name="base-ami",
+        Architecture="x86_64",
+        RootDeviceName="/dev/sda1",
+        VirtualizationType="hvm",
+        BlockDeviceMappings=[
+            {
+                "DeviceName": "/dev/sda1",
+                "Ebs": {"VolumeSize": 8, "VolumeType": "gp3"},
+            }
+        ],
+    )
+    return resp["ImageId"]
+
+
+@pytest.fixture
+def snapshot_env() -> Dict[str, Any]:
+    with mock_aws():
+        region = "us-east-1"
+        ec2_client = boto3.client("ec2", region_name=region)
+        ec2_resource = boto3.resource("ec2", region_name=region)
+        dynamodb = boto3.resource("dynamodb", region_name=region)
+        main_table, meta_table = _create_tables(dynamodb)
+        yield {
+            "ec2_client": ec2_client,
+            "ec2_resource": ec2_resource,
+            "main_table": main_table,
+            "meta_table": meta_table,
+        }
+
+
+def _create_instance(ec2_resource, ec2_client, project: str) -> Any:
+    image_id = _register_image(ec2_client)
+    instance = ec2_resource.create_instances(
+        ImageId=image_id,
+        MinCount=1,
+        MaxCount=1,
+    )[0]
+    instance.create_tags(Tags=[{"Key": "Project", "Value": project}])
+    return instance
+
+
+def test_create_snapshots_creates_records(snapshot_env):
+    instance = _create_instance(
+        snapshot_env["ec2_resource"],
+        snapshot_env["ec2_client"],
+        "proj-one",
+    )
+    event = {"detail": {"instance-id": instance.id, "state": "shutting-down"}}
+
+    snapshots.create_snapshots(
+        event,
+        ec2_resource=snapshot_env["ec2_resource"],
+        main_table=snapshot_env["main_table"],
+        meta_table=snapshot_env["meta_table"],
+    )
+
+    main_item = snapshot_env["main_table"].get_item(Key={"project": "proj-one"})[
+        "Item"
+    ]
+    assert main_item["Status"] == "SNAPSHOTTING"
+    assert main_item["VolumeCount"] == 1
+
+    meta_items = snapshot_env["meta_table"].query(
+        KeyConditionExpression=Key("project").eq("proj-one")
+    )["Items"]
+    assert len(meta_items) == 1
+    assert meta_items[0]["State"] == "PENDING"
+
+
+def test_create_image_registers_new_ami(snapshot_env):
+    instance = _create_instance(
+        snapshot_env["ec2_resource"],
+        snapshot_env["ec2_client"],
+        "proj-two",
+    )
+    snapshots.create_snapshots(
+        {"detail": {"instance-id": instance.id, "state": "shutting-down"}},
+        ec2_resource=snapshot_env["ec2_resource"],
+        main_table=snapshot_env["main_table"],
+        meta_table=snapshot_env["meta_table"],
+    )
+    meta_items = snapshot_env["meta_table"].query(
+        KeyConditionExpression=Key("project").eq("proj-two")
+    )["Items"]
+    snap_id = meta_items[0]["snapshotId"]
+
+    event = {
+        "detail": {
+            "snapshot_id": f"arn:aws:ec2:us-east-1::snapshot/{snap_id}",
+            "result": "succeeded",
+        }
+    }
+    snapshots.create_image(
+        event,
+        ec2_client=snapshot_env["ec2_client"],
+        ec2_resource=snapshot_env["ec2_resource"],
+        main_table=snapshot_env["main_table"],
+        meta_table=snapshot_env["meta_table"],
+    )
+
+    main_item = snapshot_env["main_table"].get_item(Key={"project": "proj-two"})[
+        "Item"
+    ]
+    assert main_item["Status"] == "IMAGING"
+    assert main_item["AMI"].startswith("ami-")
+
+    meta_items = snapshot_env["meta_table"].query(
+        KeyConditionExpression=Key("project").eq("proj-two")
+    )["Items"]
+    assert meta_items[0]["State"] == "COMPLETED"
+
+
+def test_mark_ready_clears_meta_and_sets_ready(snapshot_env):
+    snapshot_env["main_table"].put_item(
+        Item={"project": "proj-ready", "AMI": "ami-ready", "Status": "IMAGING"}
+    )
+    snapshot_env["meta_table"].put_item(
+        Item={
+            "project": "proj-ready",
+            "volumeId": "vol-1",
+            "snapshotId": "snap-1",
+            "State": "COMPLETED",
+        }
+    )
+
+    snapshots.mark_ready(
+        {"detail": {"ImageId": "ami-ready", "State": "available"}},
+        main_table=snapshot_env["main_table"],
+        meta_table=snapshot_env["meta_table"],
+    )
+
+    meta_items = snapshot_env["meta_table"].query(
+        KeyConditionExpression=Key("project").eq("proj-ready")
+    )["Items"]
+    assert meta_items == []
+
+    main_item = snapshot_env["main_table"].get_item(
+        Key={"project": "proj-ready"}
+    )["Item"]
+    assert main_item["Status"] == "READY"
+
+
+def test_delete_volume_removes_completed_volume(snapshot_env):
+    resp = snapshot_env["ec2_client"].create_volume(
+        AvailabilityZone="us-east-1a", Size=1, VolumeType="gp3"
+    )
+    vol_id = resp["VolumeId"]
+    snapshot_env["meta_table"].put_item(
+        Item={
+            "project": "proj-del",
+            "volumeId": vol_id,
+            "snapshotId": "snap-1",
+            "State": "COMPLETED",
+        }
+    )
+
+    snapshots.delete_volume(
+        {"detail": {"volume-id": vol_id, "state": "available"}},
+        ec2_client=snapshot_env["ec2_client"],
+        main_table=snapshot_env["main_table"],
+        meta_table=snapshot_env["meta_table"],
+    )
+
+    try:
+        resp = snapshot_env["ec2_client"].describe_volumes(VolumeIds=[vol_id])
+    except ClientError as exc:
+        assert exc.response["Error"]["Code"] in {
+            "InvalidVolume.NotFound",
+            "InvalidVolumeID.NotFound",
+        }
+    else:
+        assert resp["Volumes"] == []
+
+
+def test_delete_volume_sets_error_when_incomplete(snapshot_env):
+    snapshot_env["main_table"].put_item(
+        Item={"project": "proj-err", "Status": "SNAPSHOTTING"}
+    )
+    snapshot_env["meta_table"].put_item(
+        Item={
+            "project": "proj-err",
+            "volumeId": "vol-err",
+            "snapshotId": "snap-err",
+            "State": "PENDING",
+        }
+    )
+
+    snapshots.delete_volume(
+        {"detail": {"volume-id": "vol-err", "state": "available"}},
+        ec2_client=snapshot_env["ec2_client"],
+        main_table=snapshot_env["main_table"],
+        meta_table=snapshot_env["meta_table"],
+    )
+
+    main_item = snapshot_env["main_table"].get_item(Key={"project": "proj-err"})[
+        "Item"
+    ]
+    assert main_item["Status"] == "ERROR"
