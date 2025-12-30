@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
@@ -13,6 +13,16 @@ from devbox.utils import get_project_tag
 
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from mypy_boto3_ec2.client import EC2Client
+    from mypy_boto3_ec2.service_resource import EC2ServiceResource
+    from mypy_boto3_dynamodb.service_resource import Table as DynamoDBTable
+else:
+    # Runtime aliases to avoid importing type stubs at runtime.
+    EC2Client = Any
+    EC2ServiceResource = Any
+    DynamoDBTable = Any
 
 
 @dataclass(frozen=True)
@@ -27,9 +37,9 @@ class SnapshotConfig:
 def create_snapshots(
     event: Dict[str, Any],
     *,
-    ec2_resource: Any,
-    main_table: Any,
-    meta_table: Any,
+    ec2_resource: EC2ServiceResource,
+    main_table: DynamoDBTable,
+    meta_table: DynamoDBTable,
     config: Optional[SnapshotConfig] = None,
 ) -> None:
     """Handle EC2 instance shutdown by creating volume snapshots."""
@@ -131,8 +141,8 @@ def create_snapshots(
 def cleanup_ami_and_snapshots(
     ami_id: str,
     *,
-    ec2_resource: Any,
-    ec2_client: Any,
+    ec2_resource: EC2ServiceResource,
+    ec2_client: EC2Client,
     config: Optional[SnapshotConfig] = None,
 ) -> None:
     """Deregister an AMI and remove its backing snapshots."""
@@ -185,10 +195,10 @@ def cleanup_ami_and_snapshots(
 def create_image(
     event: Dict[str, Any],
     *,
-    ec2_client: Any,
-    ec2_resource: Any,
-    main_table: Any,
-    meta_table: Any,
+    ec2_client: EC2Client,
+    ec2_resource: EC2ServiceResource,
+    main_table: DynamoDBTable,
+    meta_table: DynamoDBTable,
     config: Optional[SnapshotConfig] = None,
 ) -> None:
     """Handle snapshot completion by registering a new AMI."""
@@ -287,7 +297,11 @@ def create_image(
 
     old_ami = main_item.get("AMI")
     if old_ami:
-        desc = ec2_client.describe_images(ImageIds=[old_ami])["Images"]
+        try:
+            desc = ec2_client.describe_images(ImageIds=[old_ami])["Images"]
+        except ClientError:
+            logger.warning("old ami not found ami_id=%s", old_ami)
+            return
         if not desc:
             logger.warning("old ami not found ami_id=%s", old_ami)
             return
@@ -339,8 +353,8 @@ def create_image(
 def mark_ready(
     event: Dict[str, Any],
     *,
-    main_table: Any,
-    meta_table: Any,
+    main_table: DynamoDBTable,
+    meta_table: DynamoDBTable,
 ) -> None:
     """Handle AMI availability by marking project ready and clearing metadata."""
     detail = (event or {}).get("detail", {})
@@ -389,9 +403,9 @@ def mark_ready(
 def delete_volume(
     event: Dict[str, Any],
     *,
-    ec2_client: Any,
-    main_table: Any,
-    meta_table: Any,
+    ec2_client: EC2Client,
+    main_table: DynamoDBTable,
+    meta_table: DynamoDBTable,
 ) -> None:
     """Handle detached volumes by deleting them once snapshots complete."""
     detail = (event or {}).get("detail", {})

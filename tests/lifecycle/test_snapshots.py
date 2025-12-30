@@ -1,6 +1,7 @@
 """Tests for snapshot lifecycle handlers."""
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Tuple
 
 import boto3
@@ -188,7 +189,8 @@ def test_mark_ready_clears_meta_and_sets_ready(snapshot_env):
     assert main_item["Status"] == "READY"
 
 
-def test_delete_volume_removes_completed_volume(snapshot_env):
+@pytest.mark.parametrize("describe_returns_empty", [False, True])
+def test_delete_volume_removes_completed_volume(snapshot_env, describe_returns_empty, monkeypatch):
     resp = snapshot_env["ec2_client"].create_volume(
         AvailabilityZone="us-east-1a", Size=1, VolumeType="gp3"
     )
@@ -208,6 +210,11 @@ def test_delete_volume_removes_completed_volume(snapshot_env):
         main_table=snapshot_env["main_table"],
         meta_table=snapshot_env["meta_table"],
     )
+
+    if describe_returns_empty:
+        def _describe_volumes(**_kwargs):
+            return {"Volumes": []}
+        monkeypatch.setattr(snapshot_env["ec2_client"], "describe_volumes", _describe_volumes)
 
     try:
         resp = snapshot_env["ec2_client"].describe_volumes(VolumeIds=[vol_id])
@@ -244,3 +251,175 @@ def test_delete_volume_sets_error_when_incomplete(snapshot_env):
         "Item"
     ]
     assert main_item["Status"] == "ERROR"
+
+
+def test_create_snapshots_logs_missing_instance_id(snapshot_env, caplog):
+    with caplog.at_level(logging.WARNING):
+        snapshots.create_snapshots(
+            {"detail": {"state": "shutting-down"}},
+            ec2_resource=snapshot_env["ec2_resource"],
+            main_table=snapshot_env["main_table"],
+            meta_table=snapshot_env["meta_table"],
+        )
+
+    assert "missing instance id in shutdown event" in caplog.text
+
+
+def test_create_snapshots_logs_missing_project_tag(snapshot_env, caplog):
+    image_id = _register_image(snapshot_env["ec2_client"])
+    instance = snapshot_env["ec2_resource"].create_instances(
+        ImageId=image_id,
+        MinCount=1,
+        MaxCount=1,
+    )[0]
+
+    with caplog.at_level(logging.WARNING):
+        snapshots.create_snapshots(
+            {"detail": {"instance-id": instance.id, "state": "shutting-down"}},
+            ec2_resource=snapshot_env["ec2_resource"],
+            main_table=snapshot_env["main_table"],
+            meta_table=snapshot_env["meta_table"],
+        )
+
+    assert "instance missing project tag" in caplog.text
+
+
+def test_create_image_logs_missing_snapshot_arn(snapshot_env, caplog):
+    with caplog.at_level(logging.WARNING):
+        snapshots.create_image(
+            {"detail": {"result": "succeeded"}},
+            ec2_client=snapshot_env["ec2_client"],
+            ec2_resource=snapshot_env["ec2_resource"],
+            main_table=snapshot_env["main_table"],
+            meta_table=snapshot_env["meta_table"],
+        )
+
+    assert "no snapshot arn in event" in caplog.text
+
+
+def test_create_image_logs_missing_meta_entry(snapshot_env, caplog):
+    with caplog.at_level(logging.WARNING):
+        snapshots.create_image(
+            {
+                "detail": {
+                    "snapshot_id": "arn:aws:ec2:us-east-1::snapshot/snap-missing",
+                    "result": "succeeded",
+                }
+            },
+            ec2_client=snapshot_env["ec2_client"],
+            ec2_resource=snapshot_env["ec2_resource"],
+            main_table=snapshot_env["main_table"],
+            meta_table=snapshot_env["meta_table"],
+        )
+
+    assert "no meta entry found for snapshot" in caplog.text
+
+
+def test_create_image_logs_missing_main_entry(snapshot_env, caplog):
+    snapshot_env["meta_table"].put_item(
+        Item={
+            "project": "proj-missing",
+            "volumeId": "vol-missing",
+            "instanceId": "i-missing",
+            "deviceName": "/dev/sda1",
+            "snapshotId": "snap-missing",
+            "State": "PENDING",
+        }
+    )
+
+    with caplog.at_level(logging.WARNING):
+        snapshots.create_image(
+            {
+                "detail": {
+                    "snapshot_id": "arn:aws:ec2:us-east-1::snapshot/snap-missing",
+                    "result": "succeeded",
+                }
+            },
+            ec2_client=snapshot_env["ec2_client"],
+            ec2_resource=snapshot_env["ec2_resource"],
+            main_table=snapshot_env["main_table"],
+            meta_table=snapshot_env["meta_table"],
+        )
+
+    assert "no main entry found" in caplog.text
+
+
+def test_create_image_logs_old_ami_not_found(snapshot_env, caplog):
+    resp = snapshot_env["ec2_client"].create_volume(
+        AvailabilityZone="us-east-1a", Size=1, VolumeType="gp3"
+    )
+    vol_id = resp["VolumeId"]
+    snap_resp = snapshot_env["ec2_client"].create_snapshot(VolumeId=vol_id)
+    snap_id = snap_resp["SnapshotId"]
+
+    snapshot_env["main_table"].put_item(
+        Item={
+            "project": "proj-old-ami",
+            "VolumeCount": 1,
+            "Status": "SNAPSHOTTING",
+            "AMI": "ami-missing",
+            "RootDeviceName": "/dev/sda1",
+            "Architecture": "x86_64",
+            "VirtualizationType": "hvm",
+        }
+    )
+    snapshot_env["meta_table"].put_item(
+        Item={
+            "project": "proj-old-ami",
+            "volumeId": vol_id,
+            "instanceId": "i-old-ami",
+            "deviceName": "/dev/sda1",
+            "snapshotId": snap_id,
+            "State": "COMPLETED",
+        }
+    )
+
+    with caplog.at_level(logging.WARNING):
+        snapshots.create_image(
+            {
+                "detail": {
+                    "snapshot_id": f"arn:aws:ec2:us-east-1::snapshot/{snap_id}",
+                    "result": "succeeded",
+                }
+            },
+            ec2_client=snapshot_env["ec2_client"],
+            ec2_resource=snapshot_env["ec2_resource"],
+            main_table=snapshot_env["main_table"],
+            meta_table=snapshot_env["meta_table"],
+        )
+
+    assert "old ami not found" in caplog.text
+
+
+def test_mark_ready_logs_missing_ami_id(snapshot_env, caplog):
+    with caplog.at_level(logging.WARNING):
+        snapshots.mark_ready(
+            {"detail": {"State": "available"}},
+            main_table=snapshot_env["main_table"],
+            meta_table=snapshot_env["meta_table"],
+        )
+
+    assert "missing ami id in event" in caplog.text
+
+
+def test_mark_ready_logs_missing_main_entry(snapshot_env, caplog):
+    with caplog.at_level(logging.WARNING):
+        snapshots.mark_ready(
+            {"detail": {"ImageId": "ami-missing", "State": "available"}},
+            main_table=snapshot_env["main_table"],
+            meta_table=snapshot_env["meta_table"],
+        )
+
+    assert "no main entry found for ami" in caplog.text
+
+
+def test_delete_volume_logs_missing_volume_id(snapshot_env, caplog):
+    with caplog.at_level(logging.WARNING):
+        snapshots.delete_volume(
+            {"detail": {"state": "available"}},
+            ec2_client=snapshot_env["ec2_client"],
+            main_table=snapshot_env["main_table"],
+            meta_table=snapshot_env["meta_table"],
+        )
+
+    assert "missing volume id in event" in caplog.text
