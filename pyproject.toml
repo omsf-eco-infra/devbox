@@ -51,7 +51,7 @@ addopts = "-v"
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
-platforms = ["osx-64", "osx-arm64", "linux-64", "linux-arm64"]
+platforms = ["osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
 
 [tool.pixi.pypi-dependencies]
 devbox = { path = ".", editable = true }
