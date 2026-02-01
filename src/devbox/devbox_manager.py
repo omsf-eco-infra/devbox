@@ -203,7 +203,132 @@ class DevBoxManager:
                 original_exception=e
             )
 
-    def terminate_instance(self, identifier: str, console=None) -> Tuple[bool, str]:
+    def get_project_item(self, project: str) -> Optional[Dict[str, Any]]:
+        """Get a project entry from the main DynamoDB table.
+
+        Args:
+            project: Project name
+
+        Returns:
+            Project item if it exists, otherwise None
+        """
+        try:
+            table = self.get_table()
+            response = table.get_item(Key={"project": project})
+            return response.get("Item")
+        except ClientError as e:
+            raise utils.AWSClientError(
+                f"Failed to retrieve project '{project}': {str(e)}",
+                error_code=e.response.get('Error', {}).get('Code'),
+                original_exception=e
+            )
+
+    def project_in_use(self, project: str, item: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+        """Check whether a project is currently in use.
+
+        Args:
+            project: Project name
+            item: Optional project item from DynamoDB
+
+        Returns:
+            Tuple of (in_use, reason)
+        """
+        try:
+            filters = [
+                {"Name": "tag:Project", "Values": [project]},
+                {"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped", "shutting-down"]}
+            ]
+            response = self.ec2.describe_instances(Filters=filters)
+            instances = [
+                instance
+                for reservation in response.get("Reservations", [])
+                for instance in reservation.get("Instances", [])
+            ]
+            if instances:
+                states = sorted({i.get("State", {}).get("Name", "unknown") for i in instances})
+                return True, f"EC2 instances in states: {', '.join(states)}."
+        except ClientError as e:
+            raise utils.AWSClientError(
+                f"Failed to check instance usage for project '{project}': {str(e)}",
+                error_code=e.response.get('Error', {}).get('Code'),
+                original_exception=e
+            )
+
+        status = (item or {}).get("Status")
+        in_use_statuses = {"LAUNCHING", "SNAPSHOTTING", "IMAGING"}
+        if status in in_use_statuses:
+            return True, f"Project status is {status}."
+
+        return False, ""
+
+    def delete_project_entry(self, project: str) -> None:
+        """Delete a project entry from the main DynamoDB table.
+
+        Args:
+            project: Project name
+        """
+        try:
+            table = self.get_table()
+            table.delete_item(Key={"project": project})
+        except ClientError as e:
+            raise utils.AWSClientError(
+                f"Failed to delete project '{project}' from the main table: {str(e)}",
+                error_code=e.response.get('Error', {}).get('Code'),
+                original_exception=e
+            )
+
+    def delete_ami_and_snapshots(self, ami_id: str) -> Dict[str, Any]:
+        """Deregister an AMI and delete its backing snapshots.
+
+        Args:
+            ami_id: AMI ID to delete
+
+        Returns:
+            Dict with AMI cleanup details
+        """
+        if not ami_id:
+            raise ValueError("No AMI ID provided.")
+
+        try:
+            response = self.ec2.describe_images(ImageIds=[ami_id])
+            images = response.get("Images", [])
+            if not images:
+                raise utils.ResourceNotFoundError(f"AMI {ami_id} not found.")
+
+            image = images[0]
+            snapshot_ids = []
+            for mapping in image.get("BlockDeviceMappings", []):
+                ebs = mapping.get("Ebs", {})
+                snapshot_id = ebs.get("SnapshotId")
+                if snapshot_id:
+                    snapshot_ids.append(snapshot_id)
+
+            self.ec2.deregister_image(ImageId=ami_id)
+
+            failed_snapshots = []
+            for snapshot_id in snapshot_ids:
+                try:
+                    self.ec2.delete_snapshot(SnapshotId=snapshot_id)
+                except ClientError as e:
+                    failed_snapshots.append((snapshot_id, e))
+
+            if failed_snapshots:
+                failed_ids = ", ".join(snap_id for snap_id, _ in failed_snapshots)
+                raise utils.DevBoxError(
+                    f"Deregistered AMI {ami_id} but failed to delete snapshots: {failed_ids}."
+                )
+
+            return {"ami_id": ami_id, "snapshot_count": len(snapshot_ids)}
+
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'UnknownError')
+            raise utils.AWSClientError(
+                f"Error deleting AMI {ami_id}: {error_code} - {str(e)}",
+                error_code=error_code,
+                original_exception=e
+            )
+
+    def terminate_instance(self, identifier: str, console=None) -> Dict[str, str]:
         """Terminate an instance by ID or project name.
 
         Args:
@@ -211,14 +336,16 @@ class DevBoxManager:
             console: Optional console output handler
 
         Returns:
-            A tuple of (success: bool, message: str)
+            Dict with instance termination details
         """
         try:
             # First, try to find instances by project name
             instances = self.list_instances(project=identifier)
 
             if len(instances) > 1:
-                return False, f"Multiple instances found for project '{identifier}'. Please specify instance ID instead."
+                raise utils.DevBoxError(
+                    f"Multiple instances found for project '{identifier}'. Please specify instance ID instead."
+                )
             elif len(instances) == 1:
                 instance_id = instances[0]['InstanceId']
                 project = instances[0]['Project']
@@ -230,14 +357,22 @@ class DevBoxManager:
                     instance_id = instance['InstanceId']
                     project = utils.get_project_tag(instance.get('Tags', []))
                     if not project:
-                        return False, f"Instance {identifier} is not managed by devbox (missing Project tag)."
+                        raise utils.DevBoxError(
+                            f"Instance {identifier} is not managed by devbox (missing Project tag)."
+                        )
                 except (ClientError, KeyError, IndexError):
-                    return False, f"No instance found with ID or project name: {identifier}"
+                    raise utils.ResourceNotFoundError(
+                        f"No instance found with ID or project name: {identifier}"
+                    )
 
             # Terminate the instance
             self.ec2.terminate_instances(InstanceIds=[instance_id])
-            return True, f"Terminating instance {instance_id} (project: {project})."
+            return {"instance_id": instance_id, "project": project}
 
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'UnknownError')
-            return False, f"Error terminating instance: {error_code} - {str(e)}"
+            raise utils.AWSClientError(
+                f"Error terminating instance: {error_code} - {str(e)}",
+                error_code=error_code,
+                original_exception=e
+            )
