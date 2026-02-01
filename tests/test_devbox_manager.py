@@ -2,6 +2,7 @@
 
 import pytest
 import boto3
+from botocore.exceptions import ClientError
 
 from moto import mock_aws
 
@@ -658,6 +659,236 @@ class TestDevBoxManager:
 
         assert in_use is True
         assert "EC2 instances" in reason
+
+    @pytest.mark.parametrize("state", ["stopped", "stopping", "shutting-down"])
+    def test_project_in_use_with_non_running_states(self, state):
+        """Test project_in_use detects non-running instance states."""
+        def fake_describe_instances(**_kwargs):
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {"State": {"Name": state}}
+                        ]
+                    }
+                ]
+            }
+
+        original = self.manager.ec2.describe_instances
+        self.manager.ec2.describe_instances = fake_describe_instances
+        try:
+            in_use, reason = self.manager.project_in_use("any-project", {"Status": "READY"})
+        finally:
+            self.manager.ec2.describe_instances = original
+
+        assert in_use is True
+        assert state in reason
+
+    @pytest.mark.parametrize("status", ["LAUNCHING", "SNAPSHOTTING", "IMAGING"])
+    def test_project_in_use_with_statuses(self, status):
+        """Test project_in_use returns True for busy statuses without instances."""
+        def fake_describe_instances(**_kwargs):
+            return {"Reservations": []}
+
+        original = self.manager.ec2.describe_instances
+        self.manager.ec2.describe_instances = fake_describe_instances
+        try:
+            in_use, reason = self.manager.project_in_use("any-project", {"Status": status})
+        finally:
+            self.manager.ec2.describe_instances = original
+
+        assert in_use is True
+        assert status in reason
+
+    def test_project_in_use_ready_without_instances(self):
+        """Test project_in_use returns False for READY with no instances."""
+        def fake_describe_instances(**_kwargs):
+            return {"Reservations": []}
+
+        original = self.manager.ec2.describe_instances
+        self.manager.ec2.describe_instances = fake_describe_instances
+        try:
+            in_use, reason = self.manager.project_in_use("any-project", {"Status": "READY"})
+        finally:
+            self.manager.ec2.describe_instances = original
+
+        assert in_use is False
+        assert reason == ""
+
+    def test_project_in_use_client_error(self):
+        """Test project_in_use surfaces AWS client errors."""
+        def fake_describe_instances(**_kwargs):
+            raise ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "Denied"}},
+                "DescribeInstances"
+            )
+
+        original = self.manager.ec2.describe_instances
+        self.manager.ec2.describe_instances = fake_describe_instances
+        try:
+            with pytest.raises(Exception) as excinfo:
+                self.manager.project_in_use("any-project", {"Status": "READY"})
+        finally:
+            self.manager.ec2.describe_instances = original
+
+        assert "Failed to check instance usage" in str(excinfo.value)
+
+    def test_get_project_item_success(self):
+        """Test get_project_item returns a project item."""
+        self.ssm_client.put_parameter(
+            Name="/devbox/snapshotTable", Value="projects-table", Type="String"
+        )
+
+        self.dynamodb.create_table(
+            TableName="projects-table",
+            KeySchema=[{"AttributeName": "project", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "project", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        table = self.dynamodb.Table("projects-table")
+        table.put_item(Item={"project": "demo", "Status": "READY", "AMI": "ami-12345678"})
+
+        item = self.manager.get_project_item("demo")
+
+        assert item is not None
+        assert item["project"] == "demo"
+
+    def test_get_project_item_missing(self):
+        """Test get_project_item returns None when project missing."""
+        self.ssm_client.put_parameter(
+            Name="/devbox/snapshotTable", Value="projects-table", Type="String"
+        )
+
+        self.dynamodb.create_table(
+            TableName="projects-table",
+            KeySchema=[{"AttributeName": "project", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "project", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        item = self.manager.get_project_item("missing")
+
+        assert item is None
+
+    def test_get_project_item_client_error(self):
+        """Test get_project_item handles DynamoDB client errors."""
+        def fake_get_table():
+            class FakeTable:
+                def get_item(self, **_kwargs):
+                    raise ClientError(
+                        {"Error": {"Code": "ResourceNotFoundException", "Message": "Missing"}},
+                        "GetItem"
+                    )
+
+            return FakeTable()
+
+        original = self.manager.get_table
+        self.manager.get_table = fake_get_table
+        try:
+            with pytest.raises(Exception) as excinfo:
+                self.manager.get_project_item("demo")
+        finally:
+            self.manager.get_table = original
+
+        assert "Failed to retrieve project" in str(excinfo.value)
+
+    def test_delete_ami_and_snapshots_success(self):
+        """Test delete_ami_and_snapshots deregisters AMI and deletes snapshots."""
+        volume = self.ec2_client.create_volume(Size=8, AvailabilityZone="us-east-1a")
+        snapshot = self.ec2_client.create_snapshot(
+            VolumeId=volume["VolumeId"], Description="test"
+        )
+        snapshot_id = snapshot["SnapshotId"]
+
+        image_resp = self.ec2_client.register_image(
+            Name="test-ami",
+            BlockDeviceMappings=[
+                {"DeviceName": "/dev/sda1", "Ebs": {"SnapshotId": snapshot_id}}
+            ],
+            RootDeviceName="/dev/sda1",
+            VirtualizationType="hvm",
+            Architecture="x86_64",
+        )
+        ami_id = image_resp["ImageId"]
+
+        result = self.manager.delete_ami_and_snapshots(ami_id)
+
+        assert result["ami_id"] == ami_id
+        assert result["snapshot_count"] == 1
+
+    def test_delete_ami_and_snapshots_not_found(self):
+        """Test delete_ami_and_snapshots raises when AMI is missing."""
+        original = self.manager.ec2.describe_images
+        def fake_describe_images(**_kwargs):
+            return {"Images": []}
+
+        self.manager.ec2.describe_images = fake_describe_images
+        try:
+            with pytest.raises(Exception) as excinfo:
+                self.manager.delete_ami_and_snapshots("ami-00000000")
+        finally:
+            self.manager.ec2.describe_images = original
+
+        assert "AMI ami-00000000 not found" in str(excinfo.value)
+
+    def test_delete_ami_and_snapshots_partial_snapshot_failure(self):
+        """Test delete_ami_and_snapshots raises when snapshot deletion fails."""
+        volume = self.ec2_client.create_volume(Size=8, AvailabilityZone="us-east-1a")
+        snapshot1 = self.ec2_client.create_snapshot(
+            VolumeId=volume["VolumeId"], Description="test-1"
+        )
+        snapshot2 = self.ec2_client.create_snapshot(
+            VolumeId=volume["VolumeId"], Description="test-2"
+        )
+
+        image_resp = self.ec2_client.register_image(
+            Name="test-ami",
+            BlockDeviceMappings=[
+                {"DeviceName": "/dev/sda1", "Ebs": {"SnapshotId": snapshot1["SnapshotId"]}},
+                {"DeviceName": "/dev/sdb", "Ebs": {"SnapshotId": snapshot2["SnapshotId"]}},
+            ],
+            RootDeviceName="/dev/sda1",
+            VirtualizationType="hvm",
+            Architecture="x86_64",
+        )
+        ami_id = image_resp["ImageId"]
+
+        original = self.manager.ec2.delete_snapshot
+        def fake_delete_snapshot(SnapshotId):
+            if SnapshotId == snapshot2["SnapshotId"]:
+                raise ClientError(
+                    {"Error": {"Code": "InternalError", "Message": "Boom"}},
+                    "DeleteSnapshot"
+                )
+            return original(SnapshotId=SnapshotId)
+
+        self.manager.ec2.delete_snapshot = fake_delete_snapshot
+        try:
+            with pytest.raises(Exception) as excinfo:
+                self.manager.delete_ami_and_snapshots(ami_id)
+        finally:
+            self.manager.ec2.delete_snapshot = original
+
+        assert "failed to delete snapshots" in str(excinfo.value)
+
+    def test_delete_ami_and_snapshots_client_error(self):
+        """Test delete_ami_and_snapshots handles AWS client errors."""
+        original = self.manager.ec2.describe_images
+        def fake_describe_images(**_kwargs):
+            raise ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "Denied"}},
+                "DescribeImages"
+            )
+
+        self.manager.ec2.describe_images = fake_describe_images
+        try:
+            with pytest.raises(Exception) as excinfo:
+                self.manager.delete_ami_and_snapshots("ami-12345678")
+        finally:
+            self.manager.ec2.describe_images = original
+
+        assert "Error deleting AMI" in str(excinfo.value)
 
     def test_delete_project_entry_removes_item(self):
         """Test delete_project_entry removes a project from DynamoDB."""
