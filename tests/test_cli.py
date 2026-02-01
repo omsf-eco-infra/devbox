@@ -174,10 +174,10 @@ class TestTerminateCommand:
         mock_console_class.return_value = mock_console
         mock_manager_class.return_value = mock_manager
 
-        mock_manager.terminate_instance.return_value = (
-            True,
-            "Instance terminated successfully",
-        )
+        mock_manager.terminate_instance.return_value = {
+            "instance_id": "i-1234567890abcdef0",
+            "project": "test-project",
+        }
 
         self.runner = CliRunner()
         result = self.runner.invoke(cli, ["terminate", "i-1234567890abcdef0"])
@@ -187,7 +187,7 @@ class TestTerminateCommand:
             "i-1234567890abcdef0", mock_console
         )
         mock_console.print_success.assert_called_once_with(
-            "Instance terminated successfully"
+            "Terminating instance i-1234567890abcdef0 (project: test-project)."
         )
 
     @patch("devbox.cli.DevBoxManager")
@@ -199,15 +199,15 @@ class TestTerminateCommand:
         mock_manager_class.return_value = mock_manager
 
         # TODO: maybe don't mock this?
-        mock_manager.terminate_instance.return_value = (False, "Instance not found")
+        mock_manager.terminate_instance.side_effect = Exception("Instance not found")
 
         result = self.runner.invoke(cli, ["terminate", "i-nonexistent"])
 
         assert result.exit_code == 1
-        mock_manager.terminate_instance.assert_called_once_with(
-            "i-nonexistent", mock_console
+        mock_manager.terminate_instance.assert_called_once_with("i-nonexistent", mock_console)
+        mock_console.print_error.assert_called_once_with(
+            "Failed to terminate instance: Instance not found"
         )
-        mock_console.print_error.assert_called_once_with("Instance not found")
 
     @patch("devbox.cli.DevBoxManager")
     @patch("devbox.cli.ConsoleOutput")
@@ -463,7 +463,10 @@ class TestDeleteProjectCommand:
 
         mock_manager.get_project_item.return_value = {"project": "demo", "AMI": "ami-12345678"}
         mock_manager.project_in_use.return_value = (False, "")
-        mock_manager.delete_ami_and_snapshots.return_value = (True, "Deleted AMI")
+        mock_manager.delete_ami_and_snapshots.return_value = {
+            "ami_id": "ami-12345678",
+            "snapshot_count": 2,
+        }
 
         result = self.runner.invoke(cli, ["delete-project", "demo", "--force"])
 
@@ -789,7 +792,10 @@ class TestCommandChaining:
         mock_manager.list_instances.return_value = []
         mock_manager.list_volumes.return_value = []
         mock_manager.list_snapshots.return_value = []
-        mock_manager.terminate_instance.return_value = (True, "Terminated")
+        mock_manager.terminate_instance.return_value = {
+            "instance_id": "i-test",
+            "project": "test-project",
+        }
 
         # Run status then terminate
         result1 = self.runner.invoke(cli, ["status"])

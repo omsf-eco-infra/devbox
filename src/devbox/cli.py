@@ -59,12 +59,10 @@ def terminate(ctx, instance_id: str):
     manager = ctx.obj['manager']
 
     try:
-        success, message = manager.terminate_instance(instance_id, console)
-        if success:
-            console.print_success(message)
-        else:
-            console.print_error(message)
-            sys.exit(1)
+        result = manager.terminate_instance(instance_id, console)
+        console.print_success(
+            f"Terminating instance {result['instance_id']} (project: {result['project']})."
+        )
     except Exception as e:
         console.print_error(f"Failed to terminate instance: {str(e)}")
         sys.exit(1)
@@ -162,12 +160,10 @@ def delete_project(ctx, project: str, force: bool):
                 console.print_warning("AMI cleanup cancelled.")
                 return
 
-        success, message = manager.delete_ami_and_snapshots(ami_id)
-        if success:
-            console.print_success(message)
-        else:
-            console.print_error(message)
-            sys.exit(1)
+        result = manager.delete_ami_and_snapshots(ami_id)
+        console.print_success(
+            f"Deregistered AMI {result['ami_id']} and deleted {result['snapshot_count']} snapshot(s)."
+        )
 
     except Exception as e:
         console.print_error(f"Failed to delete project: {str(e)}")

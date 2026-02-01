@@ -277,23 +277,23 @@ class DevBoxManager:
                 original_exception=e
             )
 
-    def delete_ami_and_snapshots(self, ami_id: str) -> Tuple[bool, str]:
+    def delete_ami_and_snapshots(self, ami_id: str) -> Dict[str, Any]:
         """Deregister an AMI and delete its backing snapshots.
 
         Args:
             ami_id: AMI ID to delete
 
         Returns:
-            Tuple of (success, message)
+            Dict with AMI cleanup details
         """
         if not ami_id:
-            return False, "No AMI ID provided."
+            raise ValueError("No AMI ID provided.")
 
         try:
             response = self.ec2.describe_images(ImageIds=[ami_id])
             images = response.get("Images", [])
             if not images:
-                return False, f"AMI {ami_id} not found."
+                raise utils.ResourceNotFoundError(f"AMI {ami_id} not found.")
 
             image = images[0]
             snapshot_ids = []
@@ -314,17 +314,21 @@ class DevBoxManager:
 
             if failed_snapshots:
                 failed_ids = ", ".join(snap_id for snap_id, _ in failed_snapshots)
-                return False, (
+                raise utils.DevBoxError(
                     f"Deregistered AMI {ami_id} but failed to delete snapshots: {failed_ids}."
                 )
 
-            return True, f"Deregistered AMI {ami_id} and deleted {len(snapshot_ids)} snapshot(s)."
+            return {"ami_id": ami_id, "snapshot_count": len(snapshot_ids)}
 
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'UnknownError')
-            return False, f"Error deleting AMI {ami_id}: {error_code} - {str(e)}"
+            raise utils.AWSClientError(
+                f"Error deleting AMI {ami_id}: {error_code} - {str(e)}",
+                error_code=error_code,
+                original_exception=e
+            )
 
-    def terminate_instance(self, identifier: str, console=None) -> Tuple[bool, str]:
+    def terminate_instance(self, identifier: str, console=None) -> Dict[str, str]:
         """Terminate an instance by ID or project name.
 
         Args:
@@ -332,14 +336,16 @@ class DevBoxManager:
             console: Optional console output handler
 
         Returns:
-            A tuple of (success: bool, message: str)
+            Dict with instance termination details
         """
         try:
             # First, try to find instances by project name
             instances = self.list_instances(project=identifier)
 
             if len(instances) > 1:
-                return False, f"Multiple instances found for project '{identifier}'. Please specify instance ID instead."
+                raise utils.DevBoxError(
+                    f"Multiple instances found for project '{identifier}'. Please specify instance ID instead."
+                )
             elif len(instances) == 1:
                 instance_id = instances[0]['InstanceId']
                 project = instances[0]['Project']
@@ -351,14 +357,22 @@ class DevBoxManager:
                     instance_id = instance['InstanceId']
                     project = utils.get_project_tag(instance.get('Tags', []))
                     if not project:
-                        return False, f"Instance {identifier} is not managed by devbox (missing Project tag)."
+                        raise utils.DevBoxError(
+                            f"Instance {identifier} is not managed by devbox (missing Project tag)."
+                        )
                 except (ClientError, KeyError, IndexError):
-                    return False, f"No instance found with ID or project name: {identifier}"
+                    raise utils.ResourceNotFoundError(
+                        f"No instance found with ID or project name: {identifier}"
+                    )
 
             # Terminate the instance
             self.ec2.terminate_instances(InstanceIds=[instance_id])
-            return True, f"Terminating instance {instance_id} (project: {project})."
+            return {"instance_id": instance_id, "project": project}
 
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'UnknownError')
-            return False, f"Error terminating instance: {error_code} - {str(e)}"
+            raise utils.AWSClientError(
+                f"Error terminating instance: {error_code} - {str(e)}",
+                error_code=error_code,
+                original_exception=e
+            )

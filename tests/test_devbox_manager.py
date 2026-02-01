@@ -536,10 +536,8 @@ class TestDevBoxManager:
             Resources=[instance_id], Tags=[{"Key": "Project", "Value": "my-project"}]
         )
 
-        success, message = self.manager.terminate_instance(instance_id)
-
-        assert success is True
-        assert "my-project" in message
+        result = self.manager.terminate_instance(instance_id)
+        assert result["project"] == "my-project"
 
     def test_terminate_instance_by_project_name_single_instance(self):
         """Test terminating instance by project name with single match."""
@@ -552,10 +550,8 @@ class TestDevBoxManager:
             Resources=[instance_id], Tags=[{"Key": "Project", "Value": "my-project"}]
         )
 
-        success, message = self.manager.terminate_instance("my-project")
-
-        assert success is True
-        assert "my-project" in message
+        result = self.manager.terminate_instance("my-project")
+        assert result["project"] == "my-project"
 
     def test_terminate_instance_by_project_name_multiple_instances(self):
         """Test terminating by project name with multiple matches."""
@@ -576,17 +572,15 @@ class TestDevBoxManager:
             Resources=[instance2_id], Tags=[{"Key": "Project", "Value": "multi-project"}]
         )
 
-        success, message = self.manager.terminate_instance("multi-project")
-
-        assert success is False
-        assert "Multiple instances found" in message
+        with pytest.raises(Exception) as excinfo:
+            self.manager.terminate_instance("multi-project")
+        assert "Multiple instances found" in str(excinfo.value)
 
     def test_terminate_instance_not_found(self):
         """Test terminating non-existent instance."""
-        success, message = self.manager.terminate_instance("i-nonexistent")
-
-        assert success is False
-        assert "No instance found" in message
+        with pytest.raises(Exception) as excinfo:
+            self.manager.terminate_instance("i-nonexistent")
+        assert "No instance found" in str(excinfo.value)
 
     def test_terminate_instance_no_project_tag(self):
         """Test terminating instance without Project tag."""
@@ -595,10 +589,9 @@ class TestDevBoxManager:
         )
         instance_id = response["Instances"][0]["InstanceId"]
 
-        success, message = self.manager.terminate_instance(instance_id)
-
-        assert success is False
-        assert "not managed by devbox" in message
+        with pytest.raises(Exception) as excinfo:
+            self.manager.terminate_instance(instance_id)
+        assert "not managed by devbox" in str(excinfo.value)
 
     def test_terminate_instance_with_console_param(self):
         """Test that console parameter is accepted."""
@@ -612,9 +605,8 @@ class TestDevBoxManager:
         )
 
         mock_console = object()
-        success, message = self.manager.terminate_instance(instance_id, console=mock_console)
-
-        assert success is True
+        result = self.manager.terminate_instance(instance_id, console=mock_console)
+        assert result["project"] == "test-project"
 
     @pytest.mark.parametrize("aws_error_scenario", [
         "instance_not_found",
@@ -624,9 +616,9 @@ class TestDevBoxManager:
     def test_terminate_instance_error_codes(self, aws_error_scenario):
         """Test terminate_instance with various error scenarios."""
         if aws_error_scenario == "instance_not_found":
-            success, message = self.manager.terminate_instance("i-nonexistent")
-            assert success is False
-            assert "No instance found" in message
+            with pytest.raises(Exception) as excinfo:
+                self.manager.terminate_instance("i-nonexistent")
+            assert "No instance found" in str(excinfo.value)
 
         elif aws_error_scenario == "multiple_instances":
             for i in range(2):
@@ -638,9 +630,9 @@ class TestDevBoxManager:
                     Resources=[instance_id], Tags=[{"Key": "Project", "Value": "duplicate-project"}]
                 )
 
-            success, message = self.manager.terminate_instance("duplicate-project")
-            assert success is False
-            assert "Multiple instances found" in message
+            with pytest.raises(Exception) as excinfo:
+                self.manager.terminate_instance("duplicate-project")
+            assert "Multiple instances found" in str(excinfo.value)
 
         elif aws_error_scenario == "no_project_tag":
             response = self.ec2_client.run_instances(
@@ -648,9 +640,9 @@ class TestDevBoxManager:
             )
             instance_id = response["Instances"][0]["InstanceId"]
 
-            success, message = self.manager.terminate_instance(instance_id)
-            assert success is False
-            assert "not managed by devbox" in message
+            with pytest.raises(Exception) as excinfo:
+                self.manager.terminate_instance(instance_id)
+            assert "not managed by devbox" in str(excinfo.value)
 
     def test_project_in_use_with_running_instance(self):
         """Test project_in_use detects active instances."""
