@@ -651,3 +651,39 @@ class TestDevBoxManager:
             success, message = self.manager.terminate_instance(instance_id)
             assert success is False
             assert "not managed by devbox" in message
+
+    def test_project_in_use_with_running_instance(self):
+        """Test project_in_use detects active instances."""
+        response = self.ec2_client.run_instances(
+            ImageId="ami-12345678", MinCount=1, MaxCount=1, InstanceType="t3.medium"
+        )
+        instance_id = response["Instances"][0]["InstanceId"]
+        self.ec2_client.create_tags(
+            Resources=[instance_id], Tags=[{"Key": "Project", "Value": "active-project"}]
+        )
+
+        in_use, reason = self.manager.project_in_use("active-project", {"Status": "READY"})
+
+        assert in_use is True
+        assert "EC2 instances" in reason
+
+    def test_delete_project_entry_removes_item(self):
+        """Test delete_project_entry removes a project from DynamoDB."""
+        self.ssm_client.put_parameter(
+            Name="/devbox/snapshotTable", Value="projects-table", Type="String"
+        )
+
+        self.dynamodb.create_table(
+            TableName="projects-table",
+            KeySchema=[{"AttributeName": "project", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "project", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        table = self.dynamodb.Table("projects-table")
+        table.put_item(Item={"project": "demo", "Status": "READY", "AMI": "ami-12345678"})
+
+        self.manager.delete_project_entry("demo")
+
+        resp = table.get_item(Key={"project": "demo"})
+        assert "Item" not in resp

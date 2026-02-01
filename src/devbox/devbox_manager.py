@@ -203,6 +203,127 @@ class DevBoxManager:
                 original_exception=e
             )
 
+    def get_project_item(self, project: str) -> Optional[Dict[str, Any]]:
+        """Get a project entry from the main DynamoDB table.
+
+        Args:
+            project: Project name
+
+        Returns:
+            Project item if it exists, otherwise None
+        """
+        try:
+            table = self.get_table()
+            response = table.get_item(Key={"project": project})
+            return response.get("Item")
+        except ClientError as e:
+            raise utils.AWSClientError(
+                f"Failed to retrieve project '{project}': {str(e)}",
+                error_code=e.response.get('Error', {}).get('Code'),
+                original_exception=e
+            )
+
+    def project_in_use(self, project: str, item: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+        """Check whether a project is currently in use.
+
+        Args:
+            project: Project name
+            item: Optional project item from DynamoDB
+
+        Returns:
+            Tuple of (in_use, reason)
+        """
+        try:
+            filters = [
+                {"Name": "tag:Project", "Values": [project]},
+                {"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped", "shutting-down"]}
+            ]
+            response = self.ec2.describe_instances(Filters=filters)
+            instances = [
+                instance
+                for reservation in response.get("Reservations", [])
+                for instance in reservation.get("Instances", [])
+            ]
+            if instances:
+                states = sorted({i.get("State", {}).get("Name", "unknown") for i in instances})
+                return True, f"EC2 instances in states: {', '.join(states)}."
+        except ClientError as e:
+            raise utils.AWSClientError(
+                f"Failed to check instance usage for project '{project}': {str(e)}",
+                error_code=e.response.get('Error', {}).get('Code'),
+                original_exception=e
+            )
+
+        status = (item or {}).get("Status")
+        in_use_statuses = {"LAUNCHING", "SNAPSHOTTING", "IMAGING"}
+        if status in in_use_statuses:
+            return True, f"Project status is {status}."
+
+        return False, ""
+
+    def delete_project_entry(self, project: str) -> None:
+        """Delete a project entry from the main DynamoDB table.
+
+        Args:
+            project: Project name
+        """
+        try:
+            table = self.get_table()
+            table.delete_item(Key={"project": project})
+        except ClientError as e:
+            raise utils.AWSClientError(
+                f"Failed to delete project '{project}' from the main table: {str(e)}",
+                error_code=e.response.get('Error', {}).get('Code'),
+                original_exception=e
+            )
+
+    def delete_ami_and_snapshots(self, ami_id: str) -> Tuple[bool, str]:
+        """Deregister an AMI and delete its backing snapshots.
+
+        Args:
+            ami_id: AMI ID to delete
+
+        Returns:
+            Tuple of (success, message)
+        """
+        if not ami_id:
+            return False, "No AMI ID provided."
+
+        try:
+            response = self.ec2.describe_images(ImageIds=[ami_id])
+            images = response.get("Images", [])
+            if not images:
+                return False, f"AMI {ami_id} not found."
+
+            image = images[0]
+            snapshot_ids = []
+            for mapping in image.get("BlockDeviceMappings", []):
+                ebs = mapping.get("Ebs", {})
+                snapshot_id = ebs.get("SnapshotId")
+                if snapshot_id:
+                    snapshot_ids.append(snapshot_id)
+
+            self.ec2.deregister_image(ImageId=ami_id)
+
+            failed_snapshots = []
+            for snapshot_id in snapshot_ids:
+                try:
+                    self.ec2.delete_snapshot(SnapshotId=snapshot_id)
+                except ClientError as e:
+                    failed_snapshots.append((snapshot_id, e))
+
+            if failed_snapshots:
+                failed_ids = ", ".join(snap_id for snap_id, _ in failed_snapshots)
+                return False, (
+                    f"Deregistered AMI {ami_id} but failed to delete snapshots: {failed_ids}."
+                )
+
+            return True, f"Deregistered AMI {ami_id} and deleted {len(snapshot_ids)} snapshot(s)."
+
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'UnknownError')
+            return False, f"Error deleting AMI {ami_id}: {error_code} - {str(e)}"
+
     def terminate_instance(self, identifier: str, console=None) -> Tuple[bool, str]:
         """Terminate an instance by ID or project name.
 

@@ -124,6 +124,55 @@ def new(ctx, project: str, base_ami: str, param_prefix: str):
         console.print_error(f"Failed to create project: {str(e)}")
         sys.exit(1)
 
+@cli.command()
+@click.argument('project')
+@click.option('--force', is_flag=True, help='Skip confirmation prompts')
+@click.pass_context
+def delete_project(ctx, project: str, force: bool):
+    """Delete a DevBox project and its AMI/snapshots."""
+    console = ctx.obj['console']
+    manager = ctx.obj['manager']
+
+    try:
+        item = manager.get_project_item(project)
+        if not item:
+            console.print_error(f"Project '{project}' not found in the main table.")
+            sys.exit(1)
+
+        in_use, reason = manager.project_in_use(project, item)
+        if in_use:
+            console.print_error(f"Project '{project}' is currently in use: {reason}")
+            sys.exit(1)
+
+        if not force:
+            if not click.confirm(f"Delete project '{project}' from the main table?"):
+                console.print_warning("Project deletion cancelled.")
+                return
+
+        manager.delete_project_entry(project)
+        console.print_success(f"Deleted project '{project}' from the main table.")
+
+        ami_id = item.get("AMI")
+        if not ami_id:
+            console.print_warning(f"No AMI recorded for project '{project}'.")
+            return
+
+        if not force:
+            if not click.confirm(f"Also delete AMI {ami_id} and its backing snapshot(s)?"):
+                console.print_warning("AMI cleanup cancelled.")
+                return
+
+        success, message = manager.delete_ami_and_snapshots(ami_id)
+        if success:
+            console.print_success(message)
+        else:
+            console.print_error(message)
+            sys.exit(1)
+
+    except Exception as e:
+        console.print_error(f"Failed to delete project: {str(e)}")
+        sys.exit(1)
+
 def main():
     """Entry point for the CLI."""
     cli(obj={})
