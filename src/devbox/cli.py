@@ -2,6 +2,7 @@
 
 This module provides the Click-based CLI for managing DevBox instances.
 """
+
 import sys
 import click
 from typing import Optional
@@ -9,22 +10,24 @@ from typing import Optional
 from .devbox_manager import DevBoxManager
 from .console_output import ConsoleOutput
 
+
 @click.group()
 @click.version_option()
 @click.pass_context
 def cli(ctx):
     """DevBox - AWS EC2 Development Environment Manager."""
     ctx.ensure_object(dict)
-    ctx.obj['console'] = ConsoleOutput()
+    ctx.obj["console"] = ConsoleOutput()
 
     try:
-        ctx.obj['manager'] = DevBoxManager()
+        ctx.obj["manager"] = DevBoxManager()
     except Exception as e:
-        ctx.obj['console'].print_error(f"Failed to initialize AWS clients: {str(e)}")
+        ctx.obj["console"].print_error(f"Failed to initialize AWS clients: {str(e)}")
         sys.exit(1)
 
+
 @cli.command()
-@click.argument('project', required=False)
+@click.argument("project", required=False)
 @click.pass_context
 def status(ctx, project: Optional[str] = None):
     """Show status of DevBox resources.
@@ -32,8 +35,8 @@ def status(ctx, project: Optional[str] = None):
     If PROJECT is provided, only show resources for that project.
     Otherwise, show all resources.
     """
-    console = ctx.obj['console']
-    manager = ctx.obj['manager']
+    console = ctx.obj["console"]
+    manager = ctx.obj["manager"]
 
     try:
         # List instances, volumes, and snapshots
@@ -50,13 +53,14 @@ def status(ctx, project: Optional[str] = None):
         console.print_error(f"Failed to retrieve status: {str(e)}")
         sys.exit(1)
 
+
 @cli.command()
-@click.argument('instance_id')
+@click.argument("instance_id")
 @click.pass_context
 def terminate(ctx, instance_id: str):
     """Terminate a DevBox instance by its ID."""
-    console = ctx.obj['console']
-    manager = ctx.obj['manager']
+    console = ctx.obj["console"]
+    manager = ctx.obj["manager"]
 
     try:
         success, message = manager.terminate_instance(instance_id, console)
@@ -69,23 +73,43 @@ def terminate(ctx, instance_id: str):
         console.print_error(f"Failed to terminate instance: {str(e)}")
         sys.exit(1)
 
+
 @cli.command()
-@click.argument('project')
-@click.option('--instance-type', help='EC2 instance type (uses last instance type if not specified)')
-@click.option('--key-pair', help='SSH key pair name (uses last keypair if not specified)')
-@click.option('--volume-size', type=int, default=0, help='Root volume size in GB')
-@click.option('--base-ami', help='Base AMI ID for new instances')
-@click.option('--param-prefix', default='/devbox', help='SSM parameter prefix')
+@click.argument("project")
+@click.option(
+    "--instance-type",
+    help="EC2 instance type (uses last instance type if not specified)",
+)
+@click.option(
+    "--key-pair", help="SSH key pair name (uses last keypair if not specified)"
+)
+@click.option("--volume-size", type=int, default=0, help="Root volume size in GB")
+@click.option("--base-ami", help="Base AMI ID for new instances")
+@click.option("--param-prefix", default="/devbox", help="SSM parameter prefix")
+@click.option(
+    "--userdata-file",
+    type=click.Path(exists=True),
+    help="Path to userdata script file (cloud-init format)",
+)
 @click.pass_context
-def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[str],
-          volume_size: int, base_ami: Optional[str], param_prefix: str):
+def launch(
+    ctx,
+    project: str,
+    instance_type: Optional[str],
+    key_pair: Optional[str],
+    volume_size: int,
+    base_ami: Optional[str],
+    param_prefix: str,
+    userdata_file: Optional[str],
+):
     """Launch a new DevBox instance.
 
     PROJECT is the name of the project to launch.
+    Optionally pass cloud-init user data with --userdata-file.
     """
     from .launch import launch_programmatic
 
-    console = ctx.obj['console']
+    console = ctx.obj["console"]
 
     try:
         launch_programmatic(
@@ -94,16 +118,18 @@ def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[s
             key_pair=key_pair,
             volume_size=volume_size,
             base_ami=base_ami,
-            param_prefix=param_prefix
+            param_prefix=param_prefix,
+            userdata_file=userdata_file,
         )
     except Exception as e:
         console.print_error(f"Failed to launch instance: {str(e)}")
         sys.exit(1)
 
+
 @cli.command()
-@click.argument('project')
-@click.option('--base-ami', required=True, help='Base AMI ID for the project')
-@click.option('--param-prefix', default='/devbox', help='SSM parameter prefix')
+@click.argument("project")
+@click.option("--base-ami", required=True, help="Base AMI ID for the project")
+@click.option("--param-prefix", default="/devbox", help="SSM parameter prefix")
 @click.pass_context
 def new(ctx, project: str, base_ami: str, param_prefix: str):
     """Create a new DevBox project without launching an instance.
@@ -112,21 +138,21 @@ def new(ctx, project: str, base_ami: str, param_prefix: str):
     """
     from .new import new_project_programmatic
 
-    console = ctx.obj['console']
+    console = ctx.obj["console"]
 
     try:
         new_project_programmatic(
-            project=project,
-            base_ami=base_ami,
-            param_prefix=param_prefix
+            project=project, base_ami=base_ami, param_prefix=param_prefix
         )
     except Exception as e:
         console.print_error(f"Failed to create project: {str(e)}")
         sys.exit(1)
 
+
 def main():
     """Entry point for the CLI."""
     cli(obj={})
+
 
 if __name__ == "__main__":
     main()

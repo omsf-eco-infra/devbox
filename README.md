@@ -126,6 +126,28 @@ This is for an individual DevBox project.
 
 1. Find the initial AMI
 
+
+## CLI Usage
+
+Launch a project using the CLI:
+
+```bash
+devbox launch my-project \
+  --instance-type t3.medium \
+  --key-pair devbox-key \
+  --base-ami ami-0123456789abcdef0
+```
+
+Optionally pass cloud-init user data (shell script or `#cloud-config`) with
+`--userdata-file`:
+
+```bash
+devbox launch my-project \
+  --instance-type t3.medium \
+  --key-pair devbox-key \
+  --userdata-file ./userdata.sh
+```
+
 ## Troubleshooting
 
 ### connect to host `<ip>` port 22: Connection refused

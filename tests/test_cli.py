@@ -272,6 +272,7 @@ class TestLaunchCommand:
             volume_size=0,  # default
             base_ami=None,
             param_prefix="/devbox",  # default
+            userdata_file=None,  # default
         )
 
     @patch("devbox.launch.launch_programmatic")
@@ -306,6 +307,7 @@ class TestLaunchCommand:
             volume_size=200,
             base_ami="ami-12345678",
             param_prefix="/custom",
+            userdata_file=None,  # default
         )
 
     @patch("devbox.launch.launch_programmatic")
@@ -360,6 +362,7 @@ class TestLaunchCommand:
             volume_size=0,
             base_ami=None,
             param_prefix="/devbox",
+            userdata_file=None,  # default
         )
 
     @patch("devbox.launch.launch_programmatic")
@@ -381,6 +384,7 @@ class TestLaunchCommand:
             volume_size=0,
             base_ami=None,
             param_prefix="/devbox",
+            userdata_file=None,  # default
         )
 
     @patch("devbox.launch.launch_programmatic")
@@ -402,6 +406,7 @@ class TestLaunchCommand:
             volume_size=0,
             base_ami=None,
             param_prefix="/devbox",
+            userdata_file=None,  # default
         )
 
     @pytest.mark.parametrize(
@@ -439,6 +444,54 @@ class TestLaunchCommand:
         assert result.exit_code == 0
         call_args = mock_launch.call_args
         assert call_args[1]["volume_size"] == expected
+
+    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.ConsoleOutput")
+    def test_launch_with_userdata_file(self, mock_console_class, mock_launch, tmp_path):
+        """Test launch command with userdata file option."""
+        mock_console = MagicMock()
+        mock_console_class.return_value = mock_console
+
+        userdata_file = tmp_path / "userdata.sh"
+        userdata_file.write_text("#!/bin/bash\necho 'Hello World'")
+
+        result = self.runner.invoke(
+            cli,
+            [
+                "launch",
+                "test-project",
+                "--instance-type",
+                "t3.medium",
+                "--key-pair",
+                "my-key",
+                "--userdata-file",
+                str(userdata_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_args = mock_launch.call_args
+        assert "userdata_file" in call_args[1]
+        assert call_args[1]["userdata_file"] == str(userdata_file)
+
+    def test_launch_userdata_file_not_found(self):
+        """Test launch command with non-existent userdata file."""
+        result = self.runner.invoke(
+            cli,
+            [
+                "launch",
+                "test-project",
+                "--instance-type",
+                "t3.medium",
+                "--key-pair",
+                "my-key",
+                "--userdata-file",
+                "/nonexistent/userdata.sh",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "does not exist" in result.output or "Invalid value" in result.output
 
 
 @patch("devbox.cli.cli")
@@ -558,6 +611,7 @@ class TestIntegrationScenarios:
             volume_size=150,
             base_ami="ami-0abcdef1234567890",
             param_prefix="/mycompany/devbox",
+            userdata_file=None,  # default
         )
 
 
