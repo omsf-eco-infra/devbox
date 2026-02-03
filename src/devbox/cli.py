@@ -105,6 +105,7 @@ def launch(
     """Launch a new DevBox instance.
 
     PROJECT is the name of the project to launch.
+    Optionally pass cloud-init user data with --userdata-file.
     """
     from .launch import launch_programmatic
 

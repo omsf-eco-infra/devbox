@@ -311,7 +311,7 @@ def launch_instance(
         volumes: List of volume mappings
         project: Project name for tagging
         az_name: Availability zone name for logging
-        userdata: Optional base64-encoded userdata string
+        userdata: Optional user data string (raw; SDK handles encoding)
 
     Returns:
         Tuple of (instance, instance_id, error) where:
@@ -748,7 +748,7 @@ def launch_instance_in_azs(
         key_name: Name of the key pair for SSH access
         volumes: List of volume mappings
         project: Project name for tagging
-        userdata: Optional base64-encoded userdata string
+        userdata: Optional user data string (raw; SDK handles encoding)
 
     Returns:
         Tuple of (instance, instance_id, instance_info) on success
