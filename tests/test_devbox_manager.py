@@ -3,6 +3,7 @@
 import pytest
 import boto3
 from botocore.exceptions import ClientError
+from unittest.mock import patch
 
 from moto import mock_aws
 
@@ -674,12 +675,8 @@ class TestDevBoxManager:
                 ]
             }
 
-        original = self.manager.ec2.describe_instances
-        self.manager.ec2.describe_instances = fake_describe_instances
-        try:
+        with patch.object(self.manager.ec2, "describe_instances", side_effect=fake_describe_instances):
             in_use, reason = self.manager.project_in_use("any-project", {"Status": "READY"})
-        finally:
-            self.manager.ec2.describe_instances = original
 
         assert in_use is True
         assert state in reason
@@ -690,12 +687,8 @@ class TestDevBoxManager:
         def fake_describe_instances(**_kwargs):
             return {"Reservations": []}
 
-        original = self.manager.ec2.describe_instances
-        self.manager.ec2.describe_instances = fake_describe_instances
-        try:
+        with patch.object(self.manager.ec2, "describe_instances", side_effect=fake_describe_instances):
             in_use, reason = self.manager.project_in_use("any-project", {"Status": status})
-        finally:
-            self.manager.ec2.describe_instances = original
 
         assert in_use is True
         assert status in reason
@@ -705,12 +698,8 @@ class TestDevBoxManager:
         def fake_describe_instances(**_kwargs):
             return {"Reservations": []}
 
-        original = self.manager.ec2.describe_instances
-        self.manager.ec2.describe_instances = fake_describe_instances
-        try:
+        with patch.object(self.manager.ec2, "describe_instances", side_effect=fake_describe_instances):
             in_use, reason = self.manager.project_in_use("any-project", {"Status": "READY"})
-        finally:
-            self.manager.ec2.describe_instances = original
 
         assert in_use is False
         assert reason == ""
@@ -723,13 +712,9 @@ class TestDevBoxManager:
                 "DescribeInstances"
             )
 
-        original = self.manager.ec2.describe_instances
-        self.manager.ec2.describe_instances = fake_describe_instances
-        try:
+        with patch.object(self.manager.ec2, "describe_instances", side_effect=fake_describe_instances):
             with pytest.raises(Exception) as excinfo:
                 self.manager.project_in_use("any-project", {"Status": "READY"})
-        finally:
-            self.manager.ec2.describe_instances = original
 
         assert "Failed to check instance usage" in str(excinfo.value)
 
@@ -773,23 +758,16 @@ class TestDevBoxManager:
 
     def test_get_project_item_client_error(self):
         """Test get_project_item handles DynamoDB client errors."""
-        def fake_get_table():
-            class FakeTable:
-                def get_item(self, **_kwargs):
-                    raise ClientError(
-                        {"Error": {"Code": "ResourceNotFoundException", "Message": "Missing"}},
-                        "GetItem"
-                    )
+        class FakeTable:
+            def get_item(self, **_kwargs):
+                raise ClientError(
+                    {"Error": {"Code": "ResourceNotFoundException", "Message": "Missing"}},
+                    "GetItem"
+                )
 
-            return FakeTable()
-
-        original = self.manager.get_table
-        self.manager.get_table = fake_get_table
-        try:
+        with patch.object(self.manager, "get_table", return_value=FakeTable()):
             with pytest.raises(Exception) as excinfo:
                 self.manager.get_project_item("demo")
-        finally:
-            self.manager.get_table = original
 
         assert "Failed to retrieve project" in str(excinfo.value)
 
@@ -819,74 +797,63 @@ class TestDevBoxManager:
 
     def test_delete_ami_and_snapshots_not_found(self):
         """Test delete_ami_and_snapshots raises when AMI is missing."""
-        original = self.manager.ec2.describe_images
         def fake_describe_images(**_kwargs):
             return {"Images": []}
 
-        self.manager.ec2.describe_images = fake_describe_images
-        try:
+        with patch.object(self.manager.ec2, "describe_images", side_effect=fake_describe_images):
             with pytest.raises(Exception) as excinfo:
                 self.manager.delete_ami_and_snapshots("ami-00000000")
-        finally:
-            self.manager.ec2.describe_images = original
 
         assert "AMI ami-00000000 not found" in str(excinfo.value)
 
     def test_delete_ami_and_snapshots_partial_snapshot_failure(self):
         """Test delete_ami_and_snapshots raises when snapshot deletion fails."""
-        volume = self.ec2_client.create_volume(Size=8, AvailabilityZone="us-east-1a")
-        snapshot1 = self.ec2_client.create_snapshot(
-            VolumeId=volume["VolumeId"], Description="test-1"
-        )
-        snapshot2 = self.ec2_client.create_snapshot(
-            VolumeId=volume["VolumeId"], Description="test-2"
-        )
+        snapshot1_id = "snap-11111111"
+        snapshot2_id = "snap-22222222"
+        ami_id = "ami-12345678"
 
-        image_resp = self.ec2_client.register_image(
-            Name="test-ami",
-            BlockDeviceMappings=[
-                {"DeviceName": "/dev/sda1", "Ebs": {"SnapshotId": snapshot1["SnapshotId"]}},
-                {"DeviceName": "/dev/sdb", "Ebs": {"SnapshotId": snapshot2["SnapshotId"]}},
-            ],
-            RootDeviceName="/dev/sda1",
-            VirtualizationType="hvm",
-            Architecture="x86_64",
-        )
-        ami_id = image_resp["ImageId"]
+        def fake_describe_images(**_kwargs):
+            return {
+                "Images": [
+                    {
+                        "BlockDeviceMappings": [
+                            {"Ebs": {"SnapshotId": snapshot1_id}},
+                            {"Ebs": {"SnapshotId": snapshot2_id}},
+                        ]
+                    }
+                ]
+            }
 
-        original = self.manager.ec2.delete_snapshot
+        def fake_deregister_image(**_kwargs):
+            return {}
+
         def fake_delete_snapshot(SnapshotId):
-            if SnapshotId == snapshot2["SnapshotId"]:
+            if SnapshotId == snapshot2_id:
                 raise ClientError(
                     {"Error": {"Code": "InternalError", "Message": "Boom"}},
                     "DeleteSnapshot"
                 )
-            return original(SnapshotId=SnapshotId)
+            return {}
 
-        self.manager.ec2.delete_snapshot = fake_delete_snapshot
-        try:
-            with pytest.raises(Exception) as excinfo:
-                self.manager.delete_ami_and_snapshots(ami_id)
-        finally:
-            self.manager.ec2.delete_snapshot = original
+        with patch.object(self.manager.ec2, "describe_images", side_effect=fake_describe_images):
+            with patch.object(self.manager.ec2, "deregister_image", side_effect=fake_deregister_image):
+                with patch.object(self.manager.ec2, "delete_snapshot", side_effect=fake_delete_snapshot):
+                    with pytest.raises(Exception) as excinfo:
+                        self.manager.delete_ami_and_snapshots(ami_id)
 
         assert "failed to delete snapshots" in str(excinfo.value)
 
     def test_delete_ami_and_snapshots_client_error(self):
         """Test delete_ami_and_snapshots handles AWS client errors."""
-        original = self.manager.ec2.describe_images
         def fake_describe_images(**_kwargs):
             raise ClientError(
                 {"Error": {"Code": "AccessDenied", "Message": "Denied"}},
                 "DescribeImages"
             )
 
-        self.manager.ec2.describe_images = fake_describe_images
-        try:
+        with patch.object(self.manager.ec2, "describe_images", side_effect=fake_describe_images):
             with pytest.raises(Exception) as excinfo:
                 self.manager.delete_ami_and_snapshots("ami-12345678")
-        finally:
-            self.manager.ec2.describe_images = original
 
         assert "Error deleting AMI" in str(excinfo.value)
 
