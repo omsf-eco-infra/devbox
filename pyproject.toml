@@ -52,9 +52,9 @@ addopts = "-v"
 #"Homepage" = "https://github.com/omsf/devbox"
 #"Bug Tracker" = "https://github.com/omsf/devbox/issues"
 
-[tool.pixi.project]
+[tool.pixi.workspace]
 channels = ["conda-forge"]
-platforms = ["osx-64"]
+platforms = ["osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
 
 [tool.pixi.pypi-dependencies]
 devbox = { path = ".", editable = true }
