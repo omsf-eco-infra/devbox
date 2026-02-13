@@ -47,7 +47,11 @@ def cli(ctx):
 @click.argument('project', required=False)
 @param_prefix_option
 @click.pass_context
-def status(ctx, project: Optional[str] = None, param_prefix: str):
+def status(
+    ctx,
+    project: Optional[str] = None,
+    param_prefix: str = DEFAULT_PARAM_PREFIX
+):
     """Show status of DevBox resources.
 
     If PROJECT is provided, only show resources for that project.
