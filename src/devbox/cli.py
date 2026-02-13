@@ -47,7 +47,7 @@ def cli(ctx):
 @click.argument('project', required=False)
 @param_prefix_option
 @click.pass_context
-def status(ctx, project: Optional[str] = None, param_prefix: str = DEFAULT_PARAM_PREFIX):
+def status(ctx, project: Optional[str] = None, param_prefix: str):
     """Show status of DevBox resources.
 
     If PROJECT is provided, only show resources for that project.
@@ -75,7 +75,7 @@ def status(ctx, project: Optional[str] = None, param_prefix: str = DEFAULT_PARAM
 @click.argument('instance_id')
 @param_prefix_option
 @click.pass_context
-def terminate(ctx, instance_id: str, param_prefix: str = DEFAULT_PARAM_PREFIX):
+def terminate(ctx, instance_id: str, param_prefix: str):
     """Terminate a DevBox instance by its ID."""
     console = ctx.obj['console']
     manager = get_manager(console, param_prefix)
