@@ -9,6 +9,32 @@ from typing import Optional
 from .devbox_manager import DevBoxManager
 from .console_output import ConsoleOutput
 
+DEFAULT_PARAM_PREFIX = '/devbox'
+PARAM_PREFIX_ENV_VAR = 'DEVBOX_PARAM_PREFIX'
+
+
+def param_prefix_option(func):
+    """Add shared --param-prefix option with env var support."""
+    return click.option(
+        '--param-prefix',
+        default=DEFAULT_PARAM_PREFIX,
+        envvar=PARAM_PREFIX_ENV_VAR,
+        show_default=True,
+        show_envvar=True,
+        help='SSM parameter prefix'
+    )(func)
+
+
+def get_manager(console: ConsoleOutput, param_prefix: str) -> DevBoxManager:
+    """Create a DevBoxManager using the requested parameter prefix."""
+    manager_prefix = param_prefix.strip('/') or 'devbox'
+    try:
+        return DevBoxManager(prefix=manager_prefix)
+    except Exception as e:
+        console.print_error(f"Failed to initialize AWS clients: {str(e)}")
+        sys.exit(1)
+
+
 @click.group()
 @click.version_option()
 @click.pass_context
@@ -17,23 +43,18 @@ def cli(ctx):
     ctx.ensure_object(dict)
     ctx.obj['console'] = ConsoleOutput()
 
-    try:
-        ctx.obj['manager'] = DevBoxManager()
-    except Exception as e:
-        ctx.obj['console'].print_error(f"Failed to initialize AWS clients: {str(e)}")
-        sys.exit(1)
-
 @cli.command()
 @click.argument('project', required=False)
+@param_prefix_option
 @click.pass_context
-def status(ctx, project: Optional[str] = None):
+def status(ctx, project: Optional[str] = None, param_prefix: str = DEFAULT_PARAM_PREFIX):
     """Show status of DevBox resources.
 
     If PROJECT is provided, only show resources for that project.
     Otherwise, show all resources.
     """
     console = ctx.obj['console']
-    manager = ctx.obj['manager']
+    manager = get_manager(console, param_prefix)
 
     try:
         # List instances, volumes, and snapshots
@@ -52,11 +73,12 @@ def status(ctx, project: Optional[str] = None):
 
 @cli.command()
 @click.argument('instance_id')
+@param_prefix_option
 @click.pass_context
-def terminate(ctx, instance_id: str):
+def terminate(ctx, instance_id: str, param_prefix: str = DEFAULT_PARAM_PREFIX):
     """Terminate a DevBox instance by its ID."""
     console = ctx.obj['console']
-    manager = ctx.obj['manager']
+    manager = get_manager(console, param_prefix)
 
     try:
         success, message = manager.terminate_instance(instance_id, console)
@@ -75,7 +97,7 @@ def terminate(ctx, instance_id: str):
 @click.option('--key-pair', help='SSH key pair name (uses last keypair if not specified)')
 @click.option('--volume-size', type=int, default=0, help='Root volume size in GB')
 @click.option('--base-ami', help='Base AMI ID for new instances')
-@click.option('--param-prefix', default='/devbox', help='SSM parameter prefix')
+@param_prefix_option
 @click.pass_context
 def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[str],
           volume_size: int, base_ami: Optional[str], param_prefix: str):
@@ -103,7 +125,7 @@ def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[s
 @cli.command()
 @click.argument('project')
 @click.option('--base-ami', required=True, help='Base AMI ID for the project')
-@click.option('--param-prefix', default='/devbox', help='SSM parameter prefix')
+@param_prefix_option
 @click.pass_context
 def new(ctx, project: str, base_ami: str, param_prefix: str):
     """Create a new DevBox project without launching an instance.
