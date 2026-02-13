@@ -65,6 +65,22 @@ flowchart LR
   class H readyPhase;
 ```
 
+### Lambda Image Build Notes
+
+The Lambda image is built with `lambdas/Dockerfile`, but the Docker build
+context must be the repository root (`.`). This is required because the image
+installs the package via `pip install .` and copies `pyproject.toml` and
+`src/` from the root.
+
+Manual equivalent:
+
+```bash
+docker build --platform linux/amd64 \
+  -f lambdas/Dockerfile \
+  -t snapshot-lambda \
+  .
+```
+
 
 
 
