@@ -423,3 +423,104 @@ def test_delete_volume_logs_missing_volume_id(snapshot_env, caplog):
         )
 
     assert "missing volume id in event" in caplog.text
+
+
+def test_cleanup_ami_and_snapshots_deletes_resources(snapshot_env, monkeypatch):
+    vol_resp = snapshot_env["ec2_client"].create_volume(
+        AvailabilityZone="us-east-1a", Size=1, VolumeType="gp3"
+    )
+    vol_id = vol_resp["VolumeId"]
+    snap_resp = snapshot_env["ec2_client"].create_snapshot(VolumeId=vol_id)
+    snap_id = snap_resp["SnapshotId"]
+
+    image_resp = snapshot_env["ec2_client"].register_image(
+        Name="cleanup-ami",
+        Architecture="x86_64",
+        RootDeviceName="/dev/sda1",
+        VirtualizationType="hvm",
+        BlockDeviceMappings=[
+            {
+                "DeviceName": "/dev/sda1",
+                "Ebs": {
+                    "SnapshotId": snap_id,
+                    "VolumeSize": 1,
+                    "VolumeType": "gp3",
+                    "DeleteOnTermination": True,
+                },
+            }
+        ],
+    )
+    ami_id = image_resp["ImageId"]
+
+    deleted_snapshots = []
+
+    class _SnapshotStub:
+        def __init__(self, snapshot_id: str) -> None:
+            self.snapshot_id = snapshot_id
+
+        def delete(self) -> None:
+            deleted_snapshots.append(self.snapshot_id)
+
+    monkeypatch.setattr(
+        snapshot_env["ec2_resource"],
+        "Snapshot",
+        lambda snapshot_id: _SnapshotStub(snapshot_id),
+    )
+
+    image = snapshot_env["ec2_resource"].Image(ami_id)
+    image_snapshot_ids = [
+        mapping.get("Ebs", {}).get("SnapshotId")
+        for mapping in image.block_device_mappings
+        if mapping.get("Ebs", {}).get("SnapshotId")
+    ]
+
+    snapshots.cleanup_ami_and_snapshots(
+        ami_id,
+        ec2_resource=snapshot_env["ec2_resource"],
+        ec2_client=snapshot_env["ec2_client"],
+        config=snapshots.SnapshotConfig(cleanup_max_attempts=1, cleanup_wait_seconds=0),
+    )
+
+    try:
+        resp = snapshot_env["ec2_client"].describe_images(ImageIds=[ami_id])
+    except ClientError as exc:
+        assert exc.response["Error"]["Code"] in {
+            "InvalidAMIID.NotFound",
+            "InvalidAMIID.Malformed",
+        }
+    else:
+        assert resp["Images"] == []
+
+    assert deleted_snapshots == image_snapshot_ids
+
+
+def test_cleanup_ami_and_snapshots_times_out(snapshot_env, monkeypatch):
+    image_resp = snapshot_env["ec2_client"].register_image(
+        Name="timeout-ami",
+        Architecture="x86_64",
+        RootDeviceName="/dev/sda1",
+        VirtualizationType="hvm",
+        BlockDeviceMappings=[
+            {
+                "DeviceName": "/dev/sda1",
+                "Ebs": {"VolumeSize": 1, "VolumeType": "gp3"},
+            }
+        ],
+    )
+    ami_id = image_resp["ImageId"]
+
+    def _describe_images(**_kwargs):
+        return {"Images": [{"ImageId": ami_id}]}
+
+    monkeypatch.setattr(snapshot_env["ec2_client"], "describe_images", _describe_images)
+
+    with pytest.raises(RuntimeError, match="Timed out waiting for AMI"):
+        snapshots.cleanup_ami_and_snapshots(
+            ami_id,
+            ec2_resource=snapshot_env["ec2_resource"],
+            ec2_client=snapshot_env["ec2_client"],
+            config=snapshots.SnapshotConfig(
+                cleanup_max_attempts=1,
+                cleanup_wait_seconds=0,
+            ),
+        )

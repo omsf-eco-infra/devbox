@@ -14,7 +14,7 @@ from devbox.utils import get_project_tag
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from mypy_boto3_ec2.client import EC2Client
     from mypy_boto3_ec2.service_resource import EC2ServiceResource
     from mypy_boto3_dynamodb.service_resource import Table as DynamoDBTable
@@ -307,6 +307,10 @@ def create_image(
             return
 
         image = desc[0]
+        if not virtualization_type:
+            virtualization_type = image.get("VirtualizationType")
+        if not architecture:
+            architecture = image.get("Architecture")
         tags = {t["Key"]: t["Value"] for t in image.get("Tags", [])}
         if tags.get("ManagedBy") == config.managed_by_tag:
             logger.info("cleaning up old ami ami_id=%s project=%s", old_ami, project)
@@ -323,13 +327,11 @@ def create_image(
                 project,
             )
 
-    image_resp = ec2_client.register_image(
-        Name=f"{project}-ami",
-        BlockDeviceMappings=mappings,
-        RootDeviceName=root_m["deviceName"],
-        VirtualizationType=virtualization_type,
-        Architecture=architecture,
-        TagSpecifications=[
+    register_image_args: Dict[str, Any] = {
+        "Name": f"{project}-ami",
+        "BlockDeviceMappings": mappings,
+        "RootDeviceName": root_m["deviceName"],
+        "TagSpecifications": [
             {
                 "ResourceType": "image",
                 "Tags": [
@@ -338,7 +340,23 @@ def create_image(
                 ],
             }
         ],
-    )
+    }
+    if virtualization_type:
+        register_image_args["VirtualizationType"] = virtualization_type
+    else:
+        logger.warning(
+            "missing virtualization type for new ami project=%s; using API default",
+            project,
+        )
+    if architecture:
+        register_image_args["Architecture"] = architecture
+    else:
+        logger.warning(
+            "missing architecture for new ami project=%s; using API default",
+            project,
+        )
+
+    image_resp = ec2_client.register_image(**register_image_args)
     new_ami = image_resp["ImageId"]
     logger.info("registered new ami ami_id=%s project=%s", new_ami, project)
 
