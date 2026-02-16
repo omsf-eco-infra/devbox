@@ -103,9 +103,18 @@ def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[s
 @cli.command()
 @click.argument('project')
 @click.option('--base-ami', required=True, help='Base AMI ID for the project')
+@click.option('--instance-type', help='Default EC2 instance type for future launches')
+@click.option('--key-pair', help='Default SSH key pair name for future launches')
 @click.option('--param-prefix', default='/devbox', help='SSM parameter prefix')
 @click.pass_context
-def new(ctx, project: str, base_ami: str, param_prefix: str):
+def new(
+    ctx,
+    project: str,
+    base_ami: str,
+    instance_type: Optional[str],
+    key_pair: Optional[str],
+    param_prefix: str,
+):
     """Create a new DevBox project without launching an instance.
 
     PROJECT is the name of the project to create.
@@ -118,6 +127,8 @@ def new(ctx, project: str, base_ami: str, param_prefix: str):
         new_project_programmatic(
             project=project,
             base_ami=base_ami,
+            instance_type=instance_type,
+            key_pair=key_pair,
             param_prefix=param_prefix
         )
     except Exception as e:
