@@ -558,7 +558,7 @@ def test_cleanup_ami_and_snapshots_deletes_resources(
                 },
                 "DescribeImages",
             )
-        raise AssertionError(f"unexpected describe mode: {describe_mode}")
+        raise AssertionError(f"unexpected describe mode: {describe_mode}")  # pragma: no cover
 
     monkeypatch.setattr(snapshot_env["ec2_client"], "describe_images", _describe_images)
 
