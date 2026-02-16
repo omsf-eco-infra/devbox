@@ -486,7 +486,10 @@ def test_delete_volume_logs_missing_volume_id(snapshot_env, caplog):
     assert "missing volume id in event" in caplog.text
 
 
-def test_cleanup_ami_and_snapshots_deletes_resources(snapshot_env, monkeypatch):
+@pytest.mark.parametrize("describe_mode", ["empty", "not_found"])
+def test_cleanup_ami_and_snapshots_deletes_resources(
+    snapshot_env, monkeypatch, describe_mode
+):
     vol_resp = snapshot_env["ec2_client"].create_volume(
         AvailabilityZone="us-east-1a", Size=1, VolumeType="gp3"
     )
@@ -542,15 +545,29 @@ def test_cleanup_ami_and_snapshots_deletes_resources(snapshot_env, monkeypatch):
         config=snapshots.SnapshotConfig(cleanup_max_attempts=1, cleanup_wait_seconds=0),
     )
 
-    try:
+    def _describe_images(**_kwargs):
+        if describe_mode == "empty":
+            return {"Images": []}
+        if describe_mode == "not_found":
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "InvalidAMIID.NotFound",
+                        "Message": f"The image id '{ami_id}' does not exist",
+                    }
+                },
+                "DescribeImages",
+            )
+        raise AssertionError(f"unexpected describe mode: {describe_mode}")
+
+    monkeypatch.setattr(snapshot_env["ec2_client"], "describe_images", _describe_images)
+
+    if describe_mode == "empty":
         resp = snapshot_env["ec2_client"].describe_images(ImageIds=[ami_id])
-    except ClientError as exc:
-        assert exc.response["Error"]["Code"] in {
-            "InvalidAMIID.NotFound",
-            "InvalidAMIID.Malformed",
-        }
-    else:
         assert resp["Images"] == []
+    else:
+        with pytest.raises(ClientError, match="InvalidAMIID.NotFound"):
+            snapshot_env["ec2_client"].describe_images(ImageIds=[ami_id])
 
     assert deleted_snapshots == image_snapshot_ids
 
