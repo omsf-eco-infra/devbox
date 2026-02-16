@@ -306,35 +306,40 @@ def create_image(
 
     old_ami = main_item.get("AMI")
     if old_ami:
+        desc = []
+        old_ami_missing = False
         try:
             desc = ec2_client.describe_images(ImageIds=[old_ami])["Images"]
-        except ClientError:
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code.startswith("InvalidAMIID"):
+                logger.warning("old ami not found ami_id=%s", old_ami)
+                old_ami_missing = True
+            else:
+                raise
+        if desc:
+            image = desc[0]
+            if not virtualization_type:
+                virtualization_type = image.get("VirtualizationType")
+            if not architecture:
+                architecture = image.get("Architecture")
+            tags = {t["Key"]: t["Value"] for t in image.get("Tags", [])}
+            if tags.get("ManagedBy") == config.managed_by_tag:
+                logger.info("cleaning up old ami ami_id=%s project=%s", old_ami, project)
+                cleanup_ami_and_snapshots(
+                    old_ami,
+                    ec2_resource=ec2_resource,
+                    ec2_client=ec2_client,
+                    config=config,
+                )
+            else:
+                logger.info(
+                    "old ami not managed by devbox ami_id=%s project=%s",
+                    old_ami,
+                    project,
+                )
+        elif not old_ami_missing:
             logger.warning("old ami not found ami_id=%s", old_ami)
-            return
-        if not desc:
-            logger.warning("old ami not found ami_id=%s", old_ami)
-            return
-
-        image = desc[0]
-        if not virtualization_type:
-            virtualization_type = image.get("VirtualizationType")
-        if not architecture:
-            architecture = image.get("Architecture")
-        tags = {t["Key"]: t["Value"] for t in image.get("Tags", [])}
-        if tags.get("ManagedBy") == config.managed_by_tag:
-            logger.info("cleaning up old ami ami_id=%s project=%s", old_ami, project)
-            cleanup_ami_and_snapshots(
-                old_ami,
-                ec2_resource=ec2_resource,
-                ec2_client=ec2_client,
-                config=config,
-            )
-        else:
-            logger.info(
-                "old ami not managed by devbox ami_id=%s project=%s",
-                old_ami,
-                project,
-            )
 
     register_image_args: Dict[str, Any] = {
         "Name": f"{project}-ami",

@@ -389,6 +389,67 @@ def test_create_image_logs_old_ami_not_found(snapshot_env, caplog):
         )
 
     assert "old ami not found" in caplog.text
+    main_item = snapshot_env["main_table"].get_item(Key={"project": "proj-old-ami"})[
+        "Item"
+    ]
+    assert main_item["Status"] == "IMAGING"
+    assert main_item["AMI"].startswith("ami-")
+    assert main_item["AMI"] != "ami-missing"
+
+
+def test_create_image_reraises_unexpected_old_ami_describe_error(
+    snapshot_env, monkeypatch
+):
+    resp = snapshot_env["ec2_client"].create_volume(
+        AvailabilityZone="us-east-1a", Size=1, VolumeType="gp3"
+    )
+    vol_id = resp["VolumeId"]
+    snap_resp = snapshot_env["ec2_client"].create_snapshot(VolumeId=vol_id)
+    snap_id = snap_resp["SnapshotId"]
+
+    snapshot_env["main_table"].put_item(
+        Item={
+            "project": "proj-old-ami-error",
+            "VolumeCount": 1,
+            "Status": "SNAPSHOTTING",
+            "AMI": "ami-forbidden",
+            "RootDeviceName": "/dev/sda1",
+            "Architecture": "x86_64",
+            "VirtualizationType": "hvm",
+        }
+    )
+    snapshot_env["meta_table"].put_item(
+        Item={
+            "project": "proj-old-ami-error",
+            "volumeId": vol_id,
+            "instanceId": "i-old-ami-error",
+            "deviceName": "/dev/sda1",
+            "snapshotId": snap_id,
+            "State": "COMPLETED",
+        }
+    )
+
+    def _describe_images(**_kwargs):
+        raise ClientError(
+            {"Error": {"Code": "UnauthorizedOperation", "Message": "Not authorized"}},
+            "DescribeImages",
+        )
+
+    monkeypatch.setattr(snapshot_env["ec2_client"], "describe_images", _describe_images)
+
+    with pytest.raises(ClientError, match="UnauthorizedOperation"):
+        snapshots.create_image(
+            {
+                "detail": {
+                    "snapshot_id": f"arn:aws:ec2:us-east-1::snapshot/{snap_id}",
+                    "result": "succeeded",
+                }
+            },
+            ec2_client=snapshot_env["ec2_client"],
+            ec2_resource=snapshot_env["ec2_resource"],
+            main_table=snapshot_env["main_table"],
+            meta_table=snapshot_env["meta_table"],
+        )
 
 
 def test_mark_ready_logs_missing_ami_id(snapshot_env, caplog):
