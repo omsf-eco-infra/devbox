@@ -177,7 +177,16 @@ def cleanup_ami_and_snapshots(
     logger.info("waiting for ami to vanish ami_id=%s", ami_id)
     for _ in range(config.cleanup_max_attempts):
         time.sleep(config.cleanup_wait_seconds)
-        resp = ec2_client.describe_images(ImageIds=[ami_id])
+        try:
+            resp = ec2_client.describe_images(ImageIds=[ami_id])
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code.startswith("InvalidAMIID"):
+                logger.info(
+                    "ami no longer exists ami_id=%s error_code=%s", ami_id, code
+                )
+                break
+            raise
         images = resp.get("Images", [])
 
         if not images:

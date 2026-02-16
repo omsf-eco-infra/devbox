@@ -524,3 +524,83 @@ def test_cleanup_ami_and_snapshots_times_out(snapshot_env, monkeypatch):
                 cleanup_wait_seconds=0,
             ),
         )
+
+
+def test_cleanup_ami_and_snapshots_handles_invalid_ami_not_found(
+    snapshot_env, monkeypatch
+):
+    image_resp = snapshot_env["ec2_client"].register_image(
+        Name="not-found-ami",
+        Architecture="x86_64",
+        RootDeviceName="/dev/sda1",
+        VirtualizationType="hvm",
+        BlockDeviceMappings=[
+            {
+                "DeviceName": "/dev/sda1",
+                "Ebs": {"VolumeSize": 1, "VolumeType": "gp3"},
+            }
+        ],
+    )
+    ami_id = image_resp["ImageId"]
+
+    def _describe_images(**_kwargs):
+        raise ClientError(
+            {
+                "Error": {
+                    "Code": "InvalidAMIID.NotFound",
+                    "Message": f"The image id '{ami_id}' does not exist",
+                }
+            },
+            "DescribeImages",
+        )
+
+    monkeypatch.setattr(snapshot_env["ec2_client"], "describe_images", _describe_images)
+
+    snapshots.cleanup_ami_and_snapshots(
+        ami_id,
+        ec2_resource=snapshot_env["ec2_resource"],
+        ec2_client=snapshot_env["ec2_client"],
+        config=snapshots.SnapshotConfig(cleanup_max_attempts=1, cleanup_wait_seconds=0),
+    )
+
+
+def test_cleanup_ami_and_snapshots_reraises_unexpected_describe_error(
+    snapshot_env, monkeypatch
+):
+    image_resp = snapshot_env["ec2_client"].register_image(
+        Name="unexpected-error-ami",
+        Architecture="x86_64",
+        RootDeviceName="/dev/sda1",
+        VirtualizationType="hvm",
+        BlockDeviceMappings=[
+            {
+                "DeviceName": "/dev/sda1",
+                "Ebs": {"VolumeSize": 1, "VolumeType": "gp3"},
+            }
+        ],
+    )
+    ami_id = image_resp["ImageId"]
+
+    def _describe_images(**_kwargs):
+        raise ClientError(
+            {
+                "Error": {
+                    "Code": "UnauthorizedOperation",
+                    "Message": "Not authorized",
+                }
+            },
+            "DescribeImages",
+        )
+
+    monkeypatch.setattr(snapshot_env["ec2_client"], "describe_images", _describe_images)
+
+    with pytest.raises(ClientError, match="UnauthorizedOperation"):
+        snapshots.cleanup_ami_and_snapshots(
+            ami_id,
+            ec2_resource=snapshot_env["ec2_resource"],
+            ec2_client=snapshot_env["ec2_client"],
+            config=snapshots.SnapshotConfig(
+                cleanup_max_attempts=1,
+                cleanup_wait_seconds=0,
+            ),
+        )
