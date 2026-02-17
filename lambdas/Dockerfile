@@ -1,9 +1,13 @@
 FROM public.ecr.aws/lambda/python:3.13
 
-# Copy function code
-COPY snapshot_lambda.py ${LAMBDA_TASK_ROOT}
+WORKDIR ${LAMBDA_TASK_ROOT}
 
-# (No extra dependencies; boto3 is provided in the Lambda runtime)
+# Install the devbox package from the repo source.
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install --no-cache-dir .
 
-# Set the handler
+# Copy Lambda handlers.
+COPY lambdas/snapshot_lambda.py ${LAMBDA_TASK_ROOT}
+
 CMD ["snapshot_lambda.create_snapshots"]
