@@ -120,6 +120,27 @@ class TestStatusCommand:
 
     @patch("devbox.cli.DevBoxManager")
     @patch("devbox.cli.ConsoleOutput")
+    def test_status_with_param_prefix_option(
+        self, mock_console_class, mock_manager_class
+    ):
+        mock_console = MagicMock()
+        mock_manager = MagicMock()
+        mock_console_class.return_value = mock_console
+        mock_manager_class.return_value = mock_manager
+
+        mock_manager.list_instances.return_value = []
+        mock_manager.list_volumes.return_value = []
+        mock_manager.list_snapshots.return_value = []
+
+        result = self.runner.invoke(
+            cli, ["status", "--param-prefix", "/custom/devbox"]
+        )
+
+        assert result.exit_code == 0
+        mock_manager_class.assert_called_once_with(prefix="custom/devbox")
+
+    @patch("devbox.cli.DevBoxManager")
+    @patch("devbox.cli.ConsoleOutput")
     def test_status_manager_error(self, mock_console_class, mock_manager_class):
         mock_console = MagicMock()
         mock_manager = MagicMock()
@@ -208,6 +229,24 @@ class TestTerminateCommand:
             "i-nonexistent", mock_console
         )
         mock_console.print_error.assert_called_once_with("Instance not found")
+
+    @patch("devbox.cli.DevBoxManager")
+    @patch("devbox.cli.ConsoleOutput")
+    def test_terminate_with_param_prefix_option(
+        self, mock_console_class, mock_manager_class
+    ):
+        mock_console = MagicMock()
+        mock_manager = MagicMock()
+        mock_console_class.return_value = mock_console
+        mock_manager_class.return_value = mock_manager
+        mock_manager.terminate_instance.return_value = (True, "Terminated")
+
+        result = self.runner.invoke(
+            cli, ["terminate", "i-1234567890abcdef0", "--param-prefix", "/custom"]
+        )
+
+        assert result.exit_code == 0
+        mock_manager_class.assert_called_once_with(prefix="custom")
 
     @patch("devbox.cli.DevBoxManager")
     @patch("devbox.cli.ConsoleOutput")
@@ -699,3 +738,68 @@ class TestCommandChaining:
         # Verify each command called its respective methods
         mock_manager.list_instances.assert_called()
         mock_manager.terminate_instance.assert_called_once_with("i-test", mock_console)
+
+
+class TestParamPrefixEnvironmentOverrides:
+    def setup_method(self):
+        self.runner = CliRunner()
+
+    @patch("devbox.cli.DevBoxManager")
+    @patch("devbox.cli.ConsoleOutput")
+    def test_status_uses_param_prefix_from_env(
+        self, mock_console_class, mock_manager_class
+    ):
+        mock_console = MagicMock()
+        mock_manager = MagicMock()
+        mock_console_class.return_value = mock_console
+        mock_manager_class.return_value = mock_manager
+        mock_manager.list_instances.return_value = []
+        mock_manager.list_volumes.return_value = []
+        mock_manager.list_snapshots.return_value = []
+
+        result = self.runner.invoke(
+            cli, ["status"], env={"DEVBOX_PARAM_PREFIX": "/env/devbox"}
+        )
+
+        assert result.exit_code == 0
+        mock_manager_class.assert_called_once_with(prefix="env/devbox")
+
+    @patch("devbox.cli.DevBoxManager")
+    @patch("devbox.cli.ConsoleOutput")
+    def test_terminate_uses_param_prefix_from_env(
+        self, mock_console_class, mock_manager_class
+    ):
+        mock_console = MagicMock()
+        mock_manager = MagicMock()
+        mock_console_class.return_value = mock_console
+        mock_manager_class.return_value = mock_manager
+        mock_manager.terminate_instance.return_value = (True, "Terminated")
+
+        result = self.runner.invoke(
+            cli,
+            ["terminate", "i-1234567890abcdef0"],
+            env={"DEVBOX_PARAM_PREFIX": "/env/devbox"},
+        )
+
+        assert result.exit_code == 0
+        mock_manager_class.assert_called_once_with(prefix="env/devbox")
+
+    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.ConsoleOutput")
+    def test_launch_uses_param_prefix_from_env(self, mock_console_class, mock_launch):
+        mock_console = MagicMock()
+        mock_console_class.return_value = mock_console
+
+        result = self.runner.invoke(
+            cli, ["launch", "test-project"], env={"DEVBOX_PARAM_PREFIX": "/env/devbox"}
+        )
+
+        assert result.exit_code == 0
+        mock_launch.assert_called_once_with(
+            project="test-project",
+            instance_type=None,
+            key_pair=None,
+            volume_size=0,
+            base_ami=None,
+            param_prefix="/env/devbox",
+        )
