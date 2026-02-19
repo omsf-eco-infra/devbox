@@ -14,6 +14,11 @@ variable "main_table_name" {
   type        = string
 }
 
+variable "main_table_arn" {
+  description = "ARN of the DynamoDB table containing project metadata"
+  type        = string
+}
+
 variable "param_prefix" {
   description = "SSM parameter prefix"
   type        = string

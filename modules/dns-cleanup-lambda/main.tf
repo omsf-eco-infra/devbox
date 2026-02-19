@@ -2,10 +2,6 @@ data "aws_region" "current" {}
 
 data "aws_caller_identity" "current" {}
 
-data "aws_dynamodb_table" "main" {
-  name = var.main_table_name
-}
-
 locals {
   ssm_param_prefix = trimprefix(var.param_prefix, "/")
 }
@@ -46,7 +42,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "dynamodb:GetItem",
           "dynamodb:Scan"
         ]
-        Resource = data.aws_dynamodb_table.main.arn
+        Resource = var.main_table_arn
       },
       {
         Effect = "Allow"

@@ -40,6 +40,7 @@ module "dns_cleanup_lambda" {
   prefix          = var.prefix
   image_uri       = module.snapshot_lambda.image_uri
   main_table_name = module.snapshot_lambda.dynamodb_table_name
+  main_table_arn  = module.snapshot_lambda.dynamodb_table_arn
   param_prefix    = "/${var.prefix}"
 }
 
