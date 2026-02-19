@@ -60,7 +60,10 @@ def _get_project_item(table: DynamoDBTable, project: Optional[str]) -> Optional[
 def _scan_project_by_instance_id(table: DynamoDBTable, instance_id: str) -> Optional[Dict[str, Any]]:
     kwargs: Dict[str, Any] = {
         "FilterExpression": Attr("InstanceId").eq(instance_id),
-        "ProjectionExpression": "project, CNAMEDomain, InstanceId",
+        "ProjectionExpression": "#project, CNAMEDomain, InstanceId",
+        "ExpressionAttributeNames": {
+            "#project": "project",
+        },
     }
 
     while True:

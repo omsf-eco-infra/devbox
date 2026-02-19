@@ -74,6 +74,9 @@ class TestLifecycleCleanupDns:
         )
 
         table.scan.assert_called_once()
+        scan_kwargs = table.scan.call_args.kwargs
+        assert scan_kwargs["ProjectionExpression"] == "#project, CNAMEDomain, InstanceId"
+        assert scan_kwargs["ExpressionAttributeNames"] == {"#project": "project"}
         dns_manager.remove_cname_for_project.assert_called_once_with(
             project="my-project",
             custom_subdomain="keep-name",
