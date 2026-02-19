@@ -35,6 +35,8 @@ class DNSProviderError(Exception):
 class DNSProvider(Protocol):
     """DNS provider interface."""
 
+    zone_name: str
+
     def create_cname(self, subdomain: str, target: str) -> CNAMERecord:
         ...
 
@@ -119,6 +121,28 @@ class CloudflareProvider(DNSProvider):
         name = self._fqdn(subdomain)
         if existing and existing.target == target:
             return existing
+
+        # Keep Cloudflare behavior in line with Route53 UPSERT semantics.
+        if existing and existing.provider_record_id:
+            payload = self._request(
+                "PUT",
+                f"/zones/{self.zone_id}/dns_records/{existing.provider_record_id}",
+                json={
+                    "type": "CNAME",
+                    "name": name,
+                    "content": target,
+                    "ttl": DEFAULT_TTL,
+                    "proxied": False,
+                },
+            )
+
+            record = payload.get("result", {})
+            return CNAMERecord(
+                name=record.get("name", name),
+                target=record.get("content", target),
+                ttl=record.get("ttl", DEFAULT_TTL),
+                provider_record_id=record.get("id", existing.provider_record_id),
+            )
 
         payload = self._request(
             "POST",
@@ -333,6 +357,23 @@ class DNSManager:
             raise ValueError("Subdomain exceeds 63 characters")
         return sanitized
 
+    def normalize_subdomain(self, subdomain: str) -> Optional[str]:
+        """Validate and normalize a user-facing subdomain label."""
+        candidate = subdomain.strip().lower()
+        if not candidate:
+            return None
+        if "." in candidate:
+            return None
+
+        try:
+            return self.sanitize_dns_name(project=candidate, custom_subdomain=candidate)
+        except ValueError:
+            return None
+
+    def normalize_stored_subdomain(self, stored_value: str) -> Optional[str]:
+        """Normalize a stored DNS value (subdomain label)."""
+        return self.normalize_subdomain(stored_value)
+
     def assign_cname_to_instance(
         self,
         project: str,
@@ -344,7 +385,12 @@ class DNSManager:
             LOG.info("DNS not configured; skipping CNAME assignment")
             return None
 
-        subdomain = self.sanitize_dns_name(project, custom_subdomain)
+        if custom_subdomain is None:
+            subdomain = self.sanitize_dns_name(project)
+        else:
+            subdomain = self.normalize_subdomain(custom_subdomain)
+            if not subdomain:
+                raise ValueError("Subdomain must not include domain suffixes")
         record = self.provider.create_cname(subdomain, instance_public_dns)
         return record.name if record else None
 
@@ -358,5 +404,10 @@ class DNSManager:
             LOG.info("DNS not configured; skipping CNAME removal")
             return False
 
-        subdomain = self.sanitize_dns_name(project, custom_subdomain)
+        if custom_subdomain is None:
+            subdomain = self.sanitize_dns_name(project)
+        else:
+            subdomain = self.normalize_subdomain(custom_subdomain)
+            if not subdomain:
+                raise ValueError("Subdomain must not include domain suffixes")
         return self.provider.delete_cname(subdomain)

@@ -34,6 +34,15 @@ module "snapshot_lambda" {
   prefix = var.prefix
 }
 
+module "dns_cleanup_lambda" {
+  source = "./modules/dns-cleanup-lambda"
+
+  prefix          = var.prefix
+  image_uri       = module.snapshot_lambda.image_uri
+  main_table_name = module.snapshot_lambda.dynamodb_table_name
+  param_prefix    = "/${var.prefix}"
+}
+
 module "config" {
   source = "./modules/config"
 

@@ -27,3 +27,8 @@ output "dynamodb_metadata_name" {
   description = "Name of the DynamoDB table used for metadata"
   value       = aws_dynamodb_table.meta.name
 }
+
+output "image_uri" {
+  description = "Digest-pinned image URI shared by Lambda modules"
+  value       = local.image_uri
+}

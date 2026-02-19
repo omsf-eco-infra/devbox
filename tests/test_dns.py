@@ -46,6 +46,7 @@ class FakeSession:
 
 class StubProvider:
     def __init__(self) -> None:
+        self.zone_name = "example.com"
         self.created: List[Any] = []
         self.deleted: List[str] = []
 
@@ -181,6 +182,47 @@ class TestCloudflareProvider:
         assert session.calls[0]["method"] == "GET"
         assert session.calls[1]["method"] == "DELETE"
 
+    def test_create_cname_updates_existing_record_with_new_target(self):
+        get_response = FakeResponse(
+            200,
+            {
+                "success": True,
+                "result": [
+                    {
+                        "id": "abc123",
+                        "name": "app.example.com",
+                        "content": "old.example.net",
+                        "ttl": 120,
+                    }
+                ],
+            },
+        )
+        update_response = FakeResponse(
+            200,
+            {
+                "success": True,
+                "result": {
+                    "id": "abc123",
+                    "name": "app.example.com",
+                    "content": "new.example.net",
+                    "ttl": 300,
+                },
+            },
+        )
+        session = FakeSession([get_response, update_response])
+        provider = CloudflareProvider(
+            api_token="token",
+            zone_id="zone123",
+            zone_name="example.com",
+            session=session,
+        )
+
+        record = provider.create_cname("app", "new.example.net")
+
+        assert record.target == "new.example.net"
+        assert session.calls[0]["method"] == "GET"
+        assert session.calls[1]["method"] == "PUT"
+
 
 class TestRoute53Provider:
     @pytest.fixture()
@@ -244,6 +286,31 @@ class TestDNSManager:
         manager = DNSManager(provider=provider)
 
         assert manager.remove_cname_for_project("My_Project") is True
+        assert provider.deleted == ["my-project"]
+
+    def test_normalize_subdomain_accepts_subdomain_label(self):
+        provider = StubProvider()
+        manager = DNSManager(provider=provider)
+
+        assert manager.normalize_subdomain("my-project") == "my-project"
+
+    def test_normalize_subdomain_rejects_fqdn(self):
+        provider = StubProvider()
+        manager = DNSManager(provider=provider)
+
+        assert manager.normalize_subdomain("my-project.other.com") is None
+
+    def test_normalize_stored_subdomain_rejects_fqdn(self):
+        provider = StubProvider()
+        manager = DNSManager(provider=provider)
+
+        assert manager.normalize_stored_subdomain("my-project.example.com") is None
+
+    def test_remove_cname_with_custom_subdomain_invokes_provider(self):
+        provider = StubProvider()
+        manager = DNSManager(provider=provider)
+
+        assert manager.remove_cname_for_project(project="ignored", custom_subdomain="my-project") is True
         assert provider.deleted == ["my-project"]
 
 

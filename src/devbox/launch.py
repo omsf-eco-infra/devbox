@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from typing import Dict, Any, Optional, Tuple, List, TYPE_CHECKING
 
@@ -17,8 +16,6 @@ from .utils import (
     get_ec2_client,
     get_ec2_resource,
     get_dynamodb_resource,
-    get_dynamodb_table,
-    get_ssm_parameter,
     determine_ssh_username,
     ResourceNotFoundError,
     AWSClientError
@@ -26,7 +23,7 @@ from .utils import (
 
 if TYPE_CHECKING:
     from mypy_boto3_ec2.client import EC2Client
-    from mypy_boto3_ec2.service_resource import EC2ServiceResource, Instance
+    from mypy_boto3_ec2.service_resource import EC2ServiceResource
     from mypy_boto3_dynamodb.service_resource import Table as DynamoDBTable
     from mypy_boto3_ssm.client import SSMClient
 
@@ -938,16 +935,29 @@ def launch_programmatic(
                     )
                     if dns_manager.provider is None:
                         print("DNS not configured; skipping CNAME assignment")
-                    elif cname_domain:
-                        print(f"Reusing existing DNS name: {cname_domain}")
                     else:
-                        cname_domain = dns_manager.assign_cname_to_instance(
+                        preferred_subdomain = dns_subdomain
+                        if dns_subdomain is None and cname_domain:
+                            preferred_subdomain = dns_manager.normalize_stored_subdomain(cname_domain)
+                            if preferred_subdomain is None:
+                                print(
+                                    f"Stored DNS value '{cname_domain}' is not a valid subdomain label; "
+                                    "falling back to project-derived subdomain"
+                                )
+
+                        ensured_domain = dns_manager.assign_cname_to_instance(
                             project=project,
                             instance_public_dns=instance.public_dns_name,
-                            custom_subdomain=dns_subdomain,
+                            custom_subdomain=preferred_subdomain,
                         )
-                        if cname_domain:
-                            print(f"Assigned DNS CNAME: {cname_domain}")
+                        if ensured_domain:
+                            # Persist only the subdomain preference (not the FQDN suffix).
+                            cname_domain = (
+                                preferred_subdomain
+                                if preferred_subdomain
+                                else dns_manager.sanitize_dns_name(project)
+                            )
+                            print(f"Ensured DNS CNAME: {ensured_domain}")
                         else:
                             print("DNS assignment skipped (provider not available)")
             except Exception as e:
