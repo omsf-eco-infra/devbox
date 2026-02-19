@@ -8,7 +8,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from src.devbox.dns import (
+from devbox.dns import (
     CNAMERecord,
     CloudflareProvider,
     DNSManager,
