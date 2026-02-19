@@ -382,8 +382,9 @@ def update_instance_status(
         ClientError: If there's an error updating DynamoDB
     """
     try:
-        if status == "nonexistent" and instance_info:
+        if status == "nonexistent":
             # Create a new item for this project
+            instance_info = instance_info or {}
             item = {
                 "project": project,
                 "Status": "RUNNING",

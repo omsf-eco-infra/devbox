@@ -365,6 +365,26 @@ def test_update_instance_status_new_project(mock_table):
     assert call_args["LastKeyPair"] == "test-keypair"
 
 
+def test_update_instance_status_nonexistent_without_instance_info(mock_table):
+    """Test nonexistent status works even when instance metadata is unavailable."""
+    update_instance_status(
+        mock_table,
+        "test-project",
+        "nonexistent",
+        "i-12345",
+        "ami-12345",
+        "t3.medium",
+        "test-keypair",
+        instance_info={},
+    )
+
+    mock_table.put_item.assert_called_once()
+    call_args = mock_table.put_item.call_args[1]["Item"]
+    assert call_args["project"] == "test-project"
+    assert call_args["Status"] == "RUNNING"
+    assert call_args["InstanceId"] == "i-12345"
+
+
 def test_update_instance_status_existing_project(mock_table):
     """Test updating instance status for existing project."""
     existing_item = {
