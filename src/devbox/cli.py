@@ -101,10 +101,21 @@ def terminate(ctx, instance_id: str, param_prefix: str):
 @click.option('--key-pair', help='SSH key pair name (uses last keypair if not specified)')
 @click.option('--volume-size', type=int, default=0, help='Root volume size in GB')
 @click.option('--base-ami', help='Base AMI ID for new instances')
+@click.option(
+    '--assign-dns/--no-assign-dns',
+    default=True,
+    show_default=True,
+    help='Assign a DNS CNAME for the instance (defaults to true if DNS is configured)',
+)
+@click.option(
+    '--dns-subdomain',
+    help='Custom subdomain to use instead of the project name',
+)
 @param_prefix_option
 @click.pass_context
 def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[str],
-          volume_size: int, base_ami: Optional[str], param_prefix: str):
+          volume_size: int, base_ami: Optional[str], assign_dns: bool,
+          dns_subdomain: Optional[str], param_prefix: str):
     """Launch a new DevBox instance.
 
     PROJECT is the name of the project to launch.
@@ -120,7 +131,9 @@ def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[s
             key_pair=key_pair,
             volume_size=volume_size,
             base_ami=base_ami,
-            param_prefix=param_prefix
+            param_prefix=param_prefix,
+            assign_dns=assign_dns,
+            dns_subdomain=dns_subdomain,
         )
     except Exception as e:
         console.print_error(f"Failed to launch instance: {str(e)}")

@@ -9,5 +9,6 @@ RUN pip install --no-cache-dir .
 
 # Copy Lambda handlers.
 COPY lambdas/snapshot_lambda.py ${LAMBDA_TASK_ROOT}
+COPY lambdas/dns_cleanup.py ${LAMBDA_TASK_ROOT}
 
 CMD ["snapshot_lambda.create_snapshots"]
