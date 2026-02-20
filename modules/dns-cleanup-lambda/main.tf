@@ -103,7 +103,7 @@ resource "aws_lambda_function" "dns_cleanup" {
   }
 
   image_config {
-    command = ["dns_cleanup.cleanup_dns"]
+    command = ["devbox.lambdas.dns_cleanup.cleanup_dns"]
   }
 }
 
