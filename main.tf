@@ -12,7 +12,9 @@ terraform {
 }
 
 provider "cloudflare" {
-  api_token = var.dns_provider == "cloudflare" ? var.cloudflare_api_token : null
+  # Keep Cloudflare optional for module consumers: when not using Cloudflare DNS,
+  # configure a placeholder token so provider initialization does not require secrets.
+  api_token = var.dns_provider == "cloudflare" ? var.cloudflare_api_token : "0000000000000000000000000000000000000000"
 }
 
 module "vpc" {
