@@ -2,6 +2,8 @@
 
 import pytest
 import boto3
+from botocore.exceptions import ClientError
+from unittest.mock import patch
 
 from moto import mock_aws
 
@@ -536,10 +538,8 @@ class TestDevBoxManager:
             Resources=[instance_id], Tags=[{"Key": "Project", "Value": "my-project"}]
         )
 
-        success, message = self.manager.terminate_instance(instance_id)
-
-        assert success is True
-        assert "my-project" in message
+        result = self.manager.terminate_instance(instance_id)
+        assert result["project"] == "my-project"
 
     def test_terminate_instance_by_project_name_single_instance(self):
         """Test terminating instance by project name with single match."""
@@ -552,10 +552,8 @@ class TestDevBoxManager:
             Resources=[instance_id], Tags=[{"Key": "Project", "Value": "my-project"}]
         )
 
-        success, message = self.manager.terminate_instance("my-project")
-
-        assert success is True
-        assert "my-project" in message
+        result = self.manager.terminate_instance("my-project")
+        assert result["project"] == "my-project"
 
     def test_terminate_instance_by_project_name_multiple_instances(self):
         """Test terminating by project name with multiple matches."""
@@ -576,17 +574,15 @@ class TestDevBoxManager:
             Resources=[instance2_id], Tags=[{"Key": "Project", "Value": "multi-project"}]
         )
 
-        success, message = self.manager.terminate_instance("multi-project")
-
-        assert success is False
-        assert "Multiple instances found" in message
+        with pytest.raises(Exception) as excinfo:
+            self.manager.terminate_instance("multi-project")
+        assert "Multiple instances found" in str(excinfo.value)
 
     def test_terminate_instance_not_found(self):
         """Test terminating non-existent instance."""
-        success, message = self.manager.terminate_instance("i-nonexistent")
-
-        assert success is False
-        assert "No instance found" in message
+        with pytest.raises(Exception) as excinfo:
+            self.manager.terminate_instance("i-nonexistent")
+        assert "No instance found" in str(excinfo.value)
 
     def test_terminate_instance_no_project_tag(self):
         """Test terminating instance without Project tag."""
@@ -595,10 +591,9 @@ class TestDevBoxManager:
         )
         instance_id = response["Instances"][0]["InstanceId"]
 
-        success, message = self.manager.terminate_instance(instance_id)
-
-        assert success is False
-        assert "not managed by devbox" in message
+        with pytest.raises(Exception) as excinfo:
+            self.manager.terminate_instance(instance_id)
+        assert "not managed by devbox" in str(excinfo.value)
 
     def test_terminate_instance_with_console_param(self):
         """Test that console parameter is accepted."""
@@ -612,9 +607,8 @@ class TestDevBoxManager:
         )
 
         mock_console = object()
-        success, message = self.manager.terminate_instance(instance_id, console=mock_console)
-
-        assert success is True
+        result = self.manager.terminate_instance(instance_id, console=mock_console)
+        assert result["project"] == "test-project"
 
     @pytest.mark.parametrize("aws_error_scenario", [
         "instance_not_found",
@@ -624,9 +618,9 @@ class TestDevBoxManager:
     def test_terminate_instance_error_codes(self, aws_error_scenario):
         """Test terminate_instance with various error scenarios."""
         if aws_error_scenario == "instance_not_found":
-            success, message = self.manager.terminate_instance("i-nonexistent")
-            assert success is False
-            assert "No instance found" in message
+            with pytest.raises(Exception) as excinfo:
+                self.manager.terminate_instance("i-nonexistent")
+            assert "No instance found" in str(excinfo.value)
 
         elif aws_error_scenario == "multiple_instances":
             for i in range(2):
@@ -638,9 +632,9 @@ class TestDevBoxManager:
                     Resources=[instance_id], Tags=[{"Key": "Project", "Value": "duplicate-project"}]
                 )
 
-            success, message = self.manager.terminate_instance("duplicate-project")
-            assert success is False
-            assert "Multiple instances found" in message
+            with pytest.raises(Exception) as excinfo:
+                self.manager.terminate_instance("duplicate-project")
+            assert "Multiple instances found" in str(excinfo.value)
 
         elif aws_error_scenario == "no_project_tag":
             response = self.ec2_client.run_instances(
@@ -648,6 +642,238 @@ class TestDevBoxManager:
             )
             instance_id = response["Instances"][0]["InstanceId"]
 
-            success, message = self.manager.terminate_instance(instance_id)
-            assert success is False
-            assert "not managed by devbox" in message
+            with pytest.raises(Exception) as excinfo:
+                self.manager.terminate_instance(instance_id)
+            assert "not managed by devbox" in str(excinfo.value)
+
+    def test_project_in_use_with_running_instance(self):
+        """Test project_in_use detects active instances."""
+        response = self.ec2_client.run_instances(
+            ImageId="ami-12345678", MinCount=1, MaxCount=1, InstanceType="t3.medium"
+        )
+        instance_id = response["Instances"][0]["InstanceId"]
+        self.ec2_client.create_tags(
+            Resources=[instance_id], Tags=[{"Key": "Project", "Value": "active-project"}]
+        )
+
+        in_use, reason = self.manager.project_in_use("active-project", {"Status": "READY"})
+
+        assert in_use is True
+        assert "EC2 instances" in reason
+
+    @pytest.mark.parametrize("state", ["stopped", "stopping", "shutting-down"])
+    def test_project_in_use_with_non_running_states(self, state):
+        """Test project_in_use detects non-running instance states."""
+        def fake_describe_instances(**_kwargs):
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {"State": {"Name": state}}
+                        ]
+                    }
+                ]
+            }
+
+        with patch.object(self.manager.ec2, "describe_instances", side_effect=fake_describe_instances):
+            in_use, reason = self.manager.project_in_use("any-project", {"Status": "READY"})
+
+        assert in_use is True
+        assert state in reason
+
+    @pytest.mark.parametrize("status", ["LAUNCHING", "SNAPSHOTTING", "IMAGING"])
+    def test_project_in_use_with_statuses(self, status):
+        """Test project_in_use returns True for busy statuses without instances."""
+        def fake_describe_instances(**_kwargs):
+            return {"Reservations": []}
+
+        with patch.object(self.manager.ec2, "describe_instances", side_effect=fake_describe_instances):
+            in_use, reason = self.manager.project_in_use("any-project", {"Status": status})
+
+        assert in_use is True
+        assert status in reason
+
+    def test_project_in_use_ready_without_instances(self):
+        """Test project_in_use returns False for READY with no instances."""
+        def fake_describe_instances(**_kwargs):
+            return {"Reservations": []}
+
+        with patch.object(self.manager.ec2, "describe_instances", side_effect=fake_describe_instances):
+            in_use, reason = self.manager.project_in_use("any-project", {"Status": "READY"})
+
+        assert in_use is False
+        assert reason == ""
+
+    def test_project_in_use_client_error(self):
+        """Test project_in_use surfaces AWS client errors."""
+        def fake_describe_instances(**_kwargs):
+            raise ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "Denied"}},
+                "DescribeInstances"
+            )
+
+        with patch.object(self.manager.ec2, "describe_instances", side_effect=fake_describe_instances):
+            with pytest.raises(Exception) as excinfo:
+                self.manager.project_in_use("any-project", {"Status": "READY"})
+
+        assert "Failed to check instance usage" in str(excinfo.value)
+
+    def test_get_project_item_success(self):
+        """Test get_project_item returns a project item."""
+        self.ssm_client.put_parameter(
+            Name="/devbox/snapshotTable", Value="projects-table", Type="String"
+        )
+
+        self.dynamodb.create_table(
+            TableName="projects-table",
+            KeySchema=[{"AttributeName": "project", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "project", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        table = self.dynamodb.Table("projects-table")
+        table.put_item(Item={"project": "demo", "Status": "READY", "AMI": "ami-12345678"})
+
+        item = self.manager.get_project_item("demo")
+
+        assert item is not None
+        assert item["project"] == "demo"
+
+    def test_get_project_item_missing(self):
+        """Test get_project_item returns None when project missing."""
+        self.ssm_client.put_parameter(
+            Name="/devbox/snapshotTable", Value="projects-table", Type="String"
+        )
+
+        self.dynamodb.create_table(
+            TableName="projects-table",
+            KeySchema=[{"AttributeName": "project", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "project", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        item = self.manager.get_project_item("missing")
+
+        assert item is None
+
+    def test_get_project_item_client_error(self):
+        """Test get_project_item handles DynamoDB client errors."""
+        class FakeTable:
+            def get_item(self, **_kwargs):
+                raise ClientError(
+                    {"Error": {"Code": "ResourceNotFoundException", "Message": "Missing"}},
+                    "GetItem"
+                )
+
+        with patch.object(self.manager, "get_table", return_value=FakeTable()):
+            with pytest.raises(Exception) as excinfo:
+                self.manager.get_project_item("demo")
+
+        assert "Failed to retrieve project" in str(excinfo.value)
+
+    def test_delete_ami_and_snapshots_success(self):
+        """Test delete_ami_and_snapshots deregisters AMI and deletes snapshots."""
+        volume = self.ec2_client.create_volume(Size=8, AvailabilityZone="us-east-1a")
+        snapshot = self.ec2_client.create_snapshot(
+            VolumeId=volume["VolumeId"], Description="test"
+        )
+        snapshot_id = snapshot["SnapshotId"]
+
+        image_resp = self.ec2_client.register_image(
+            Name="test-ami",
+            BlockDeviceMappings=[
+                {"DeviceName": "/dev/sda1", "Ebs": {"SnapshotId": snapshot_id}}
+            ],
+            RootDeviceName="/dev/sda1",
+            VirtualizationType="hvm",
+            Architecture="x86_64",
+        )
+        ami_id = image_resp["ImageId"]
+
+        result = self.manager.delete_ami_and_snapshots(ami_id)
+
+        assert result["ami_id"] == ami_id
+        assert result["snapshot_count"] == 1
+
+    def test_delete_ami_and_snapshots_not_found(self):
+        """Test delete_ami_and_snapshots raises when AMI is missing."""
+        def fake_describe_images(**_kwargs):
+            return {"Images": []}
+
+        with patch.object(self.manager.ec2, "describe_images", side_effect=fake_describe_images):
+            with pytest.raises(Exception) as excinfo:
+                self.manager.delete_ami_and_snapshots("ami-00000000")
+
+        assert "AMI ami-00000000 not found" in str(excinfo.value)
+
+    def test_delete_ami_and_snapshots_partial_snapshot_failure(self):
+        """Test delete_ami_and_snapshots raises when snapshot deletion fails."""
+        snapshot1_id = "snap-11111111"
+        snapshot2_id = "snap-22222222"
+        ami_id = "ami-12345678"
+
+        def fake_describe_images(**_kwargs):
+            return {
+                "Images": [
+                    {
+                        "BlockDeviceMappings": [
+                            {"Ebs": {"SnapshotId": snapshot1_id}},
+                            {"Ebs": {"SnapshotId": snapshot2_id}},
+                        ]
+                    }
+                ]
+            }
+
+        def fake_deregister_image(**_kwargs):
+            return {}
+
+        def fake_delete_snapshot(SnapshotId):
+            if SnapshotId == snapshot2_id:
+                raise ClientError(
+                    {"Error": {"Code": "InternalError", "Message": "Boom"}},
+                    "DeleteSnapshot"
+                )
+            return {}
+
+        with patch.object(self.manager.ec2, "describe_images", side_effect=fake_describe_images):
+            with patch.object(self.manager.ec2, "deregister_image", side_effect=fake_deregister_image):
+                with patch.object(self.manager.ec2, "delete_snapshot", side_effect=fake_delete_snapshot):
+                    with pytest.raises(Exception) as excinfo:
+                        self.manager.delete_ami_and_snapshots(ami_id)
+
+        assert "failed to delete snapshots" in str(excinfo.value)
+
+    def test_delete_ami_and_snapshots_client_error(self):
+        """Test delete_ami_and_snapshots handles AWS client errors."""
+        def fake_describe_images(**_kwargs):
+            raise ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "Denied"}},
+                "DescribeImages"
+            )
+
+        with patch.object(self.manager.ec2, "describe_images", side_effect=fake_describe_images):
+            with pytest.raises(Exception) as excinfo:
+                self.manager.delete_ami_and_snapshots("ami-12345678")
+
+        assert "Error deleting AMI" in str(excinfo.value)
+
+    def test_delete_project_entry_removes_item(self):
+        """Test delete_project_entry removes a project from DynamoDB."""
+        self.ssm_client.put_parameter(
+            Name="/devbox/snapshotTable", Value="projects-table", Type="String"
+        )
+
+        self.dynamodb.create_table(
+            TableName="projects-table",
+            KeySchema=[{"AttributeName": "project", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "project", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        table = self.dynamodb.Table("projects-table")
+        table.put_item(Item={"project": "demo", "Status": "READY", "AMI": "ami-12345678"})
+
+        self.manager.delete_project_entry("demo")
+
+        resp = table.get_item(Key={"project": "demo"})
+        assert "Item" not in resp
