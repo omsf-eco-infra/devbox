@@ -11,12 +11,6 @@ terraform {
   }
 }
 
-provider "cloudflare" {
-  # Keep Cloudflare optional for module consumers: when not using Cloudflare DNS,
-  # configure a placeholder token so provider initialization does not require secrets.
-  api_token = var.dns_provider == "cloudflare" ? var.cloudflare_api_token : "0000000000000000000000000000000000000000"
-}
-
 module "vpc" {
   source          = "./modules/vpc"
   name            = var.prefix
@@ -48,10 +42,6 @@ module "dns_cleanup_lambda" {
 
 module "config" {
   source = "./modules/config"
-
-  providers = {
-    cloudflare = cloudflare
-  }
 
   param_prefix         = "/${var.prefix}"
   launch_template_ids  = module.devbox.launch_template_ids

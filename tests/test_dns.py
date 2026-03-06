@@ -30,7 +30,8 @@ class FakeResponse:
         return self.payload
 
     @property
-    def text(self) -> str:
+    # Keep parity with requests.Response for error-message paths.
+    def text(self) -> str:  # pragma: no cover
         return str(self.payload)
 
 

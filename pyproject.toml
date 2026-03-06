@@ -39,7 +39,7 @@ devbox = "devbox.cli:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-packages = ["devbox", "devbox.lifecycle", "devbox.lambdas"]
+packages = ["devbox", "devbox.lifecycle"]
 
 [tool.ruff]
 line-length = 88
