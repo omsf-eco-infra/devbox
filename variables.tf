@@ -19,4 +19,26 @@ variable "ssh_cidr_blocks" {
   description = "CIDR blocks allowed to SSH into the instances"
 }
 
+variable "dns_provider" {
+  type        = string
+  description = "DNS provider to configure for devbox instances"
+  default     = "none"
 
+  validation {
+    condition     = contains(["none", "cloudflare", "route53"], var.dns_provider)
+    error_message = "dns_provider must be one of: none, cloudflare, route53."
+  }
+}
+
+variable "dns_zone" {
+  type        = string
+  description = "DNS zone name used for devbox instance CNAME records"
+  default     = ""
+}
+
+variable "cloudflare_api_token" {
+  type        = string
+  description = "Cloudflare API token used for DNS management"
+  default     = ""
+  sensitive   = true
+}
