@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List
+from unittest.mock import MagicMock
 
 import boto3
 import pytest
@@ -13,6 +14,7 @@ from devbox.dns import (
     CloudflareProvider,
     DNSManager,
     DEFAULT_TTL,
+    DNSProviderError,
     Route53Provider,
 )
 
@@ -65,6 +67,62 @@ class StubProvider:
 
 
 class TestCloudflareProvider:
+    def test_resolves_zone_id_from_zone_name(self):
+        session = FakeSession(
+            [
+                FakeResponse(
+                    200,
+                    {
+                        "success": True,
+                        "result": [{"id": "zone123", "name": "example.com"}],
+                    },
+                )
+            ]
+        )
+
+        provider = CloudflareProvider(
+            api_token="token",
+            zone_name="example.com",
+            session=session,
+        )
+
+        assert provider.zone_id == "zone123"
+        assert session.calls[0]["method"] == "GET"
+        assert session.calls[0]["url"].endswith("/zones")
+
+    def test_resolve_zone_id_raises_when_zone_not_found(self):
+        session = FakeSession([FakeResponse(200, {"success": True, "result": []})])
+
+        with pytest.raises(DNSProviderError, match="not found"):
+            CloudflareProvider(
+                api_token="token",
+                zone_name="example.com",
+                session=session,
+            )
+
+    def test_resolve_zone_id_raises_on_ambiguous_match(self):
+        session = FakeSession(
+            [
+                FakeResponse(
+                    200,
+                    {
+                        "success": True,
+                        "result": [
+                            {"id": "zone-1", "name": "example.com"},
+                            {"id": "zone-2", "name": "example.com"},
+                        ],
+                    },
+                )
+            ]
+        )
+
+        with pytest.raises(DNSProviderError, match="ambiguous"):
+            CloudflareProvider(
+                api_token="token",
+                zone_name="example.com",
+                session=session,
+            )
+
     def test_get_cname_returns_record(self):
         get_response = FakeResponse(
             200,
@@ -235,6 +293,51 @@ class TestRoute53Provider:
             provider = Route53Provider(zone_id=zone_id, zone_name="example.com", client=client)
             yield provider
 
+    @mock_aws
+    def test_resolves_zone_id_from_zone_name(self):
+        client = boto3.client("route53", region_name="us-east-1")
+        zone = client.create_hosted_zone(Name="example.com", CallerReference="lookup")
+        expected_zone_id = zone["HostedZone"]["Id"].split("/")[-1]
+
+        provider = Route53Provider(zone_name="example.com", client=client)
+
+        assert provider.zone_id == expected_zone_id
+
+    def test_resolve_zone_id_raises_when_no_public_zone_matches(self):
+        client = MagicMock()
+        client.list_hosted_zones_by_name.return_value = {
+            "HostedZones": [
+                {
+                    "Id": "/hostedzone/ZPRIVATE",
+                    "Name": "example.com.",
+                    "Config": {"PrivateZone": True},
+                }
+            ]
+        }
+
+        with pytest.raises(DNSProviderError, match="No public Route53 hosted zone"):
+            Route53Provider(zone_name="example.com", client=client)
+
+    def test_resolve_zone_id_raises_on_ambiguous_public_matches(self):
+        client = MagicMock()
+        client.list_hosted_zones_by_name.return_value = {
+            "HostedZones": [
+                {
+                    "Id": "/hostedzone/ZONE1",
+                    "Name": "example.com.",
+                    "Config": {"PrivateZone": False},
+                },
+                {
+                    "Id": "/hostedzone/ZONE2",
+                    "Name": "example.com.",
+                    "Config": {"PrivateZone": False},
+                },
+            ]
+        }
+
+        with pytest.raises(DNSProviderError, match="ambiguous"):
+            Route53Provider(zone_name="example.com", client=client)
+
     def test_create_cname(self, route53_context):
         provider = route53_context
 
@@ -339,12 +442,17 @@ class TestDNSManagerFromSSM:
             Value="token",
             Type="SecureString",
         )
-        ssm.put_parameter(
-            Name="/devbox/secrets/cloudflare/zoneId",
-            Value="zone-123",
-            Type="SecureString",
+        fake_session = FakeSession(
+            [
+                FakeResponse(
+                    200,
+                    {
+                        "success": True,
+                        "result": [{"id": "zone-123", "name": "example.com"}],
+                    },
+                )
+            ]
         )
-        fake_session = FakeSession([])
 
         manager = DNSManager.from_ssm(
             param_prefix="/devbox",
@@ -365,11 +473,6 @@ class TestDNSManagerFromSSM:
         route53 = boto3.client("route53", region_name="us-east-1")
         hosted_zone = route53.create_hosted_zone(Name="example.com", CallerReference="test")
         expected_zone_id = hosted_zone["HostedZone"]["Id"].split("/")[-1]
-        ssm.put_parameter(
-            Name="/devbox/dns/route53/zoneId",
-            Value=expected_zone_id,
-            Type="String",
-        )
 
         manager = DNSManager.from_ssm(
             param_prefix="/devbox",
@@ -379,3 +482,38 @@ class TestDNSManagerFromSSM:
 
         assert isinstance(manager.provider, Route53Provider)
         assert manager.provider.zone_id == expected_zone_id
+
+    @mock_aws
+    def test_from_ssm_disables_cloudflare_when_zone_lookup_fails(self):
+        ssm = boto3.client("ssm", region_name="us-east-1")
+        ssm.put_parameter(Name="/devbox/dns/provider", Value="cloudflare", Type="String")
+        ssm.put_parameter(Name="/devbox/dns/zone", Value="example.com", Type="String")
+        ssm.put_parameter(
+            Name="/devbox/secrets/cloudflare/apiToken",
+            Value="token",
+            Type="SecureString",
+        )
+        fake_session = FakeSession([FakeResponse(200, {"success": True, "result": []})])
+
+        manager = DNSManager.from_ssm(
+            param_prefix="/devbox",
+            ssm_client=ssm,
+            http_session=fake_session,
+        )
+
+        assert manager.provider is None
+
+    @mock_aws
+    def test_from_ssm_disables_route53_when_zone_lookup_fails(self):
+        ssm = boto3.client("ssm", region_name="us-east-1")
+        ssm.put_parameter(Name="/devbox/dns/provider", Value="route53", Type="String")
+        ssm.put_parameter(Name="/devbox/dns/zone", Value="missing-zone.com", Type="String")
+        route53 = boto3.client("route53", region_name="us-east-1")
+
+        manager = DNSManager.from_ssm(
+            param_prefix="/devbox",
+            ssm_client=ssm,
+            route53_client=route53,
+        )
+
+        assert manager.provider is None

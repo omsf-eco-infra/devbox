@@ -78,6 +78,7 @@ resource "aws_iam_role_policy" "lambda_route53_policy" {
       {
         Effect = "Allow"
         Action = [
+          "route53:ListHostedZonesByName",
           "route53:ListResourceRecordSets",
           "route53:ChangeResourceRecordSets"
         ]

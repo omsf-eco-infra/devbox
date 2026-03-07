@@ -53,18 +53,18 @@ class CloudflareProvider(DNSProvider):
     def __init__(
         self,
         api_token: str,
-        zone_id: str,
         zone_name: str,
+        zone_id: Optional[str] = None,
         session: Optional[requests.Session] = None,
         max_retries: int = 3,
         backoff_seconds: float = 1.0,
     ) -> None:
         self.api_token = api_token
-        self.zone_id = zone_id
         self.zone_name = zone_name.rstrip(".")
         self.session = session or requests.Session()
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
+        self.zone_id = zone_id or self._resolve_zone_id()
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Dict[str, Any]:
         """Perform a Cloudflare API request with basic retry on 429."""
@@ -96,6 +96,30 @@ class CloudflareProvider(DNSProvider):
 
     def _fqdn(self, subdomain: str) -> str:
         return f"{subdomain}.{self.zone_name}"
+
+    def _resolve_zone_id(self) -> str:
+        """Resolve Cloudflare zone ID from configured zone name."""
+        payload = self._request("GET", "/zones", params={"name": self.zone_name})
+        zones = payload.get("result", [])
+        matches = [
+            zone
+            for zone in zones
+            if str(zone.get("name", "")).rstrip(".").lower() == self.zone_name.lower()
+        ]
+
+        if not matches:
+            raise DNSProviderError(f"Cloudflare zone '{self.zone_name}' not found")
+        if len(matches) > 1:
+            raise DNSProviderError(
+                f"Cloudflare zone lookup for '{self.zone_name}' is ambiguous ({len(matches)} matches)"
+            )
+
+        zone_id = str(matches[0].get("id", "")).strip()
+        if not zone_id:
+            raise DNSProviderError(
+                f"Cloudflare zone '{self.zone_name}' resolved without a usable zone id"
+            )
+        return zone_id
 
     def get_cname(self, subdomain: str) -> Optional[CNAMERecord]:
         name = self._fqdn(subdomain)
@@ -181,16 +205,50 @@ class Route53Provider(DNSProvider):
 
     def __init__(
         self,
-        zone_id: str,
         zone_name: str,
+        zone_id: Optional[str] = None,
         client: Optional[BaseClient] = None,
     ) -> None:
-        self.zone_id = zone_id
         self.zone_name = zone_name.rstrip(".")
         self.client = client or boto3.client("route53")
+        self.zone_id = zone_id or self._resolve_zone_id()
 
     def _fqdn(self, subdomain: str) -> str:
         return f"{subdomain}.{self.zone_name}"
+
+    def _resolve_zone_id(self) -> str:
+        """Resolve Route53 hosted zone ID from configured zone name."""
+        try:
+            response = self.client.list_hosted_zones_by_name(
+                DNSName=f"{self.zone_name}.",
+                MaxItems="100",
+            )
+        except ClientError as exc:
+            LOG.error("Route53 hosted zone lookup failed: %s", exc)
+            raise DNSProviderError(str(exc)) from exc
+
+        matches = []
+        for zone in response.get("HostedZones", []):
+            zone_name = str(zone.get("Name", "")).rstrip(".").lower()
+            if zone_name != self.zone_name.lower():
+                continue
+            if zone.get("Config", {}).get("PrivateZone", False):
+                continue
+
+            zone_id = str(zone.get("Id", "")).strip()
+            if zone_id:
+                matches.append(zone_id.split("/")[-1])
+
+        if not matches:
+            raise DNSProviderError(
+                f"No public Route53 hosted zone found for '{self.zone_name}'"
+            )
+        if len(matches) > 1:
+            raise DNSProviderError(
+                f"Route53 hosted zone lookup for '{self.zone_name}' is ambiguous ({len(matches)} public matches)"
+            )
+
+        return matches[0]
 
     def get_cname(self, subdomain: str) -> Optional[CNAMERecord]:
         name = self._fqdn(subdomain)
@@ -312,33 +370,31 @@ class DNSManager:
 
         if provider == "cloudflare":
             api_token = _get_parameter(f"{param_prefix}/secrets/cloudflare/apiToken")
-            zone_id = _get_parameter(f"{param_prefix}/secrets/cloudflare/zoneId")
-
-            if not api_token or not zone_id:
+            if not api_token:
                 LOG.warning("Cloudflare configuration incomplete; DNS disabled")
                 return cls(None)
 
-            provider_impl = CloudflareProvider(
-                api_token=api_token,
-                zone_id=zone_id,
-                zone_name=zone_name,
-                session=http_session,
-            )
+            try:
+                provider_impl = CloudflareProvider(
+                    api_token=api_token,
+                    zone_name=zone_name,
+                    session=http_session,
+                )
+            except DNSProviderError as exc:
+                LOG.warning("Cloudflare provider initialization failed: %s", exc)
+                return cls(None)
             return cls(provider_impl)
 
         if provider == "route53":
             route53 = route53_client or boto3.client("route53")
-            zone_id_param = f"{param_prefix}/dns/route53/zoneId"
-            zone_id = _get_parameter(zone_id_param)
-            if not zone_id:
-                LOG.warning("Route53 hosted zone ID missing for zone %s; DNS disabled", zone_name)
+            try:
+                provider_impl = Route53Provider(
+                    zone_name=zone_name,
+                    client=route53,
+                )
+            except DNSProviderError as exc:
+                LOG.warning("Route53 provider initialization failed: %s", exc)
                 return cls(None)
-
-            provider_impl = Route53Provider(
-                zone_id=zone_id,
-                zone_name=zone_name,
-                client=route53,
-            )
             return cls(provider_impl)
 
         LOG.warning("Unknown DNS provider '%s'; DNS disabled", provider)

@@ -1,31 +1,6 @@
-terraform {
-  required_providers {
-    cloudflare = {
-      source  = "cloudflare/cloudflare"
-      version = "~> 4.0"
-    }
-  }
-}
-
 locals {
   dns_enabled    = var.dns_provider != "none"
   use_cloudflare = var.dns_provider == "cloudflare"
-  use_route53    = var.dns_provider == "route53"
-}
-
-data "cloudflare_zone" "selected" {
-  count = local.use_cloudflare ? 1 : 0
-  name  = var.dns_zone
-}
-
-locals {
-  cloudflare_zone_id = local.use_cloudflare ? data.cloudflare_zone.selected[0].id : null
-  route53_zone_name  = trim(var.dns_zone, ".")
-}
-
-data "aws_route53_zone" "selected" {
-  count = local.use_route53 ? 1 : 0
-  name  = local.route53_zone_name
 }
 
 resource "aws_ssm_parameter" "launch_template" {
@@ -91,22 +66,4 @@ resource "aws_ssm_parameter" "cloudflare_api_token" {
       error_message = "cloudflare_api_token must be set when dns_provider is \"cloudflare\"."
     }
   }
-}
-
-resource "aws_ssm_parameter" "cloudflare_zone_id" {
-  count       = local.use_cloudflare ? 1 : 0
-  name        = "${var.param_prefix}/secrets/cloudflare/zoneId"
-  description = "Cloudflare zone ID for devbox DNS management"
-  type        = "SecureString"
-  value       = local.cloudflare_zone_id
-  overwrite   = true
-}
-
-resource "aws_ssm_parameter" "route53_zone_id" {
-  count       = local.use_route53 ? 1 : 0
-  name        = "${var.param_prefix}/dns/route53/zoneId"
-  description = "Route53 hosted zone ID for devbox DNS management"
-  type        = "String"
-  value       = data.aws_route53_zone.selected[0].zone_id
-  overwrite   = true
 }
