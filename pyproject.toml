@@ -45,7 +45,7 @@ packages = ["devbox", "devbox.lifecycle"]
 line-length = 88
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "lambdas"]
 python_files = ["test_*.py"]
 addopts = "-v"
 

@@ -694,7 +694,7 @@ packages:
 - pypi: ./
   name: devbox
   version: 0.1.0
-  sha256: a25e591f8ca32fa0bf0a9f9b65ef33f63b26af86fd88277849a3f03808d2be74
+  sha256: 2fad66fb53bc5fbe662d3f5217b10f1de70b1fad2e4a483ed68ca55c4106b043
   requires_dist:
   - boto3>=1.26.0
   - click>=8.0.0
