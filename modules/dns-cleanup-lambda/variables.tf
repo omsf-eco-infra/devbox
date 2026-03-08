@@ -24,3 +24,14 @@ variable "param_prefix" {
   type        = string
   default     = "/devbox"
 }
+
+variable "dns_provider" {
+  description = "DNS provider used by devbox instances"
+  type        = string
+  default     = "none"
+
+  validation {
+    condition     = contains(["none", "cloudflare", "route53"], var.dns_provider)
+    error_message = "dns_provider must be one of: none, cloudflare, route53."
+  }
+}

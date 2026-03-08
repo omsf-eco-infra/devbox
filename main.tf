@@ -34,6 +34,7 @@ module "dns_cleanup_lambda" {
   main_table_name = module.snapshot_lambda.dynamodb_table_name
   main_table_arn  = module.snapshot_lambda.dynamodb_table_arn
   param_prefix    = "/${var.prefix}"
+  dns_provider    = var.dns_provider
 }
 
 module "config" {

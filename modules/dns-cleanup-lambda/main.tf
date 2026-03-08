@@ -4,6 +4,7 @@ data "aws_caller_identity" "current" {}
 
 locals {
   ssm_param_prefix = trimprefix(var.param_prefix, "/")
+  use_route53      = var.dns_provider == "route53"
 }
 
 data "aws_iam_policy_document" "lambda_assume" {
@@ -69,6 +70,8 @@ resource "aws_iam_role_policy" "lambda_policy" {
 }
 
 resource "aws_iam_role_policy" "lambda_route53_policy" {
+  count = local.use_route53 ? 1 : 0
+
   name = "${var.prefix}-dns-cleanup-lambda-route53-policy"
   role = aws_iam_role.lambda_role.id
 
