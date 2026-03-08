@@ -376,6 +376,8 @@ def update_instance_status(
         instance_type: EC2 instance type used for the instance
         key_pair: Name of the EC2 Key Pair used for SSH access
         instance_info: Optional instance metadata
+        cname_domain: Optional DNS subdomain label (not FQDN suffix) to persist as
+            CNAMEDomain in the project record
 
     Raises:
         ValueError: If the status is unexpected
