@@ -393,8 +393,8 @@ class TestDNSManager:
 
     def test_assign_cname_gracefully_skips_when_unconfigured(self):
         manager = DNSManager(provider=None)
-        result = manager.assign_cname_to_instance(
-            project="demo",
+        result = manager.assign_cname(
+            subdomain="demo",
             instance_public_dns="ec2-1-2-3-4.compute-1.amazonaws.com",
         )
         assert result is None
@@ -403,7 +403,7 @@ class TestDNSManager:
         provider = StubProvider()
         manager = DNSManager(provider=provider)
 
-        fqdn = manager.assign_cname_to_instance("My_Project", "target.dev.internal")
+        fqdn = manager.assign_cname("My_Project", "target.dev.internal")
 
         assert fqdn == "my-project.example.com"
         assert provider.created == [("my-project", "target.dev.internal")]
@@ -412,7 +412,7 @@ class TestDNSManager:
         provider = StubProvider()
         manager = DNSManager(provider=provider)
 
-        assert manager.remove_cname_for_project("My_Project") is True
+        assert manager.remove_cname("My_Project") is True
         assert provider.deleted == ["my-project"]
 
     def test_normalize_subdomain_accepts_subdomain_label(self):
@@ -427,17 +427,42 @@ class TestDNSManager:
 
         assert manager.normalize_subdomain("my-project.other.com") is None
 
-    def test_normalize_stored_subdomain_rejects_fqdn(self):
+    @pytest.mark.parametrize("operation", ["assign", "remove"])
+    def test_subdomain_with_suffix_raises_validation_error(self, operation):
         provider = StubProvider()
         manager = DNSManager(provider=provider)
 
-        assert manager.normalize_stored_subdomain("my-project.example.com") is None
+        with pytest.raises(ValueError, match="only letters, numbers, and hyphens"):
+            if operation == "assign":
+                manager.assign_cname(
+                    subdomain="my-project.example.com",
+                    instance_public_dns="target.dev.internal",
+                )
+            else:
+                manager.remove_cname(subdomain="my-project.example.com")
 
-    def test_remove_cname_with_custom_subdomain_invokes_provider(self):
+    @pytest.mark.parametrize("operation", ["assign", "remove"])
+    def test_custom_subdomain_invalid_chars_raises_specific_error(self, operation):
         provider = StubProvider()
         manager = DNSManager(provider=provider)
 
-        assert manager.remove_cname_for_project(project="ignored", custom_subdomain="my-project") is True
+        with pytest.raises(
+            ValueError,
+            match="only letters, numbers, and hyphens",
+        ):
+            if operation == "assign":
+                manager.assign_cname(
+                    subdomain="bad*name",
+                    instance_public_dns="target.dev.internal",
+                )
+            else:
+                manager.remove_cname(subdomain="bad*name")
+
+    def test_remove_cname_invokes_provider_with_subdomain(self):
+        provider = StubProvider()
+        manager = DNSManager(provider=provider)
+
+        assert manager.remove_cname(subdomain="my-project") is True
         assert provider.deleted == ["my-project"]
 
 

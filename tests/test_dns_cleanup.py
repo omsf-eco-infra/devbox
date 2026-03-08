@@ -28,8 +28,8 @@ class TestLifecycleCleanupDns:
 
         dns_manager = MagicMock()
         dns_manager.provider = object()
-        dns_manager.normalize_stored_subdomain.return_value = "my-project"
-        dns_manager.remove_cname_for_project.return_value = True
+        dns_manager.normalize_subdomain.return_value = "my-project"
+        dns_manager.remove_cname.return_value = True
         mock_from_ssm.return_value = dns_manager
 
         event = {"detail": {"state": "shutting-down", "instance-id": "i-1234567890"}}
@@ -41,10 +41,7 @@ class TestLifecycleCleanupDns:
             param_prefix="/devbox",
         )
 
-        dns_manager.remove_cname_for_project.assert_called_once_with(
-            project="my-project",
-            custom_subdomain="my-project",
-        )
+        dns_manager.remove_cname.assert_called_once_with(subdomain="my-project")
 
     @patch("devbox.lifecycle.dns.DNSManager.from_ssm")
     def test_cleanup_dns_falls_back_to_instance_id_scan(self, mock_from_ssm):
@@ -58,8 +55,8 @@ class TestLifecycleCleanupDns:
 
         dns_manager = MagicMock()
         dns_manager.provider = object()
-        dns_manager.normalize_stored_subdomain.return_value = "keep-name"
-        dns_manager.remove_cname_for_project.return_value = True
+        dns_manager.normalize_subdomain.return_value = "keep-name"
+        dns_manager.remove_cname.return_value = True
         mock_from_ssm.return_value = dns_manager
 
         event = {"detail": {"state": "shutting-down", "instance-id": "i-abc"}}
@@ -75,10 +72,7 @@ class TestLifecycleCleanupDns:
         scan_kwargs = table.scan.call_args.kwargs
         assert scan_kwargs["ProjectionExpression"] == "#project, CNAMEDomain, InstanceId"
         assert scan_kwargs["ExpressionAttributeNames"] == {"#project": "project"}
-        dns_manager.remove_cname_for_project.assert_called_once_with(
-            project="my-project",
-            custom_subdomain="keep-name",
-        )
+        dns_manager.remove_cname.assert_called_once_with(subdomain="keep-name")
 
     @patch("devbox.lifecycle.dns.DNSManager.from_ssm")
     def test_cleanup_dns_skips_non_termination_events(self, mock_from_ssm):

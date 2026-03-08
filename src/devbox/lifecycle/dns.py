@@ -118,7 +118,7 @@ def cleanup_dns(
         _logger.info("DNS provider not configured; skipping cleanup for %s", stored_dns_name)
         return
 
-    subdomain = dns_manager.normalize_stored_subdomain(stored_dns_name)
+    subdomain = dns_manager.normalize_subdomain(stored_dns_name)
     if not subdomain:
         _logger.warning(
             "stored DNS value '%s' could not be normalized for project %s; skipping cleanup",
@@ -127,10 +127,7 @@ def cleanup_dns(
         )
         return
 
-    deleted = dns_manager.remove_cname_for_project(
-        project=project or subdomain,
-        custom_subdomain=subdomain,
-    )
+    deleted = dns_manager.remove_cname(subdomain=subdomain)
     if deleted:
         _logger.info(
             "deleted DNS CNAME record for project=%s instance_id=%s subdomain=%s",

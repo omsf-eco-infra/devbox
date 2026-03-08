@@ -50,18 +50,17 @@ def test_launch_programmatic_reuses_stored_cname_subdomain(
 
     dns_manager = MagicMock()
     dns_manager.provider = object()
-    dns_manager.normalize_stored_subdomain.return_value = "saved-name"
-    dns_manager.assign_cname_to_instance.return_value = "saved-name.example.com"
+    dns_manager.normalize_subdomain.return_value = "saved-name"
+    dns_manager.assign_cname.return_value = "saved-name.example.com"
     dns_manager.sanitize_dns_name.return_value = "saved-name"
     mock_from_ssm.return_value = dns_manager
 
     launch_programmatic("test-project", instance_type="t3.medium", key_pair="test-key")
 
-    dns_manager.normalize_stored_subdomain.assert_called_once_with("saved-name")
-    dns_manager.assign_cname_to_instance.assert_called_once_with(
-        project="test-project",
+    dns_manager.normalize_subdomain.assert_called_once_with("saved-name")
+    dns_manager.assign_cname.assert_called_once_with(
+        subdomain="saved-name",
         instance_public_dns="ec2-1-2-3-4.compute-1.amazonaws.com",
-        custom_subdomain="saved-name",
     )
 
     assert mock_update.call_args.kwargs["cname_domain"] == "saved-name"
@@ -111,17 +110,16 @@ def test_launch_programmatic_invalid_stored_cname_falls_back_to_project_name(
 
     dns_manager = MagicMock()
     dns_manager.provider = object()
-    dns_manager.normalize_stored_subdomain.return_value = None
-    dns_manager.assign_cname_to_instance.return_value = "test-project.example.com"
+    dns_manager.normalize_subdomain.return_value = None
+    dns_manager.assign_cname.return_value = "test-project.example.com"
     dns_manager.sanitize_dns_name.return_value = "test-project"
     mock_from_ssm.return_value = dns_manager
 
     launch_programmatic("test-project", instance_type="t3.medium", key_pair="test-key")
 
-    dns_manager.assign_cname_to_instance.assert_called_once_with(
-        project="test-project",
+    dns_manager.assign_cname.assert_called_once_with(
+        subdomain="test-project",
         instance_public_dns="ec2-1-2-3-4.compute-1.amazonaws.com",
-        custom_subdomain=None,
     )
     assert mock_update.call_args.kwargs["cname_domain"] == "test-project"
     mock_display.assert_called_once()

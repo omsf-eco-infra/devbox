@@ -939,25 +939,25 @@ def launch_programmatic(
                     else:
                         preferred_subdomain = dns_subdomain
                         if dns_subdomain is None and cname_domain:
-                            preferred_subdomain = dns_manager.normalize_stored_subdomain(cname_domain)
+                            preferred_subdomain = dns_manager.normalize_subdomain(cname_domain)
                             if preferred_subdomain is None:
                                 print(
                                     f"Stored DNS value '{cname_domain}' is not a valid subdomain label; "
                                     "falling back to project-derived subdomain"
                                 )
 
-                        ensured_domain = dns_manager.assign_cname_to_instance(
-                            project=project,
+                        if preferred_subdomain is None:
+                            resolved_subdomain = dns_manager.sanitize_dns_name(project)
+                        else:
+                            resolved_subdomain = dns_manager.sanitize_dns_name(preferred_subdomain)
+
+                        ensured_domain = dns_manager.assign_cname(
+                            subdomain=resolved_subdomain,
                             instance_public_dns=instance.public_dns_name,
-                            custom_subdomain=preferred_subdomain,
                         )
                         if ensured_domain:
                             # Persist only the subdomain preference (not the FQDN suffix).
-                            cname_domain = (
-                                preferred_subdomain
-                                if preferred_subdomain
-                                else dns_manager.sanitize_dns_name(project)
-                            )
+                            cname_domain = resolved_subdomain
                             print(f"Ensured DNS CNAME: {ensured_domain}")
                         else:
                             print("DNS assignment skipped (provider not available)")

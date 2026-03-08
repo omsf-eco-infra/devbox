@@ -694,7 +694,7 @@ packages:
 - pypi: ./
   name: devbox
   version: 0.1.0
-  sha256: 2fad66fb53bc5fbe662d3f5217b10f1de70b1fad2e4a483ed68ca55c4106b043
+  sha256: ac9451e6e338246566ead4ebc673f04087f3cc7eb4bf44df4d468ee7459b0e6d
   requires_dist:
   - boto3>=1.26.0
   - click>=8.0.0
@@ -707,7 +707,7 @@ packages:
   - mypy-boto3-dynamodb>=1.26.0 ; extra == 'dev'
   - ruff>=0.1.0 ; extra == 'dev'
   - ty>=0.0.1 ; extra == 'dev'
-  requires_python: '>=3.8'
+  requires_python: '>=3.9'
 - conda: https://conda.anaconda.org/conda-forge/linux-64/icu-78.2-h33c6efd_0.conda
   sha256: 142a722072fa96cf16ff98eaaf641f54ab84744af81754c292cb81e0881c0329
   md5: 186a18e3ba246eccfc7cff00cd19a870

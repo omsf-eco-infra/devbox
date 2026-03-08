@@ -408,9 +408,9 @@ class DNSManager:
         LOG.warning("Unknown DNS provider '%s'; DNS disabled", provider)
         return cls(None)
 
-    def sanitize_dns_name(self, project: str, custom_subdomain: Optional[str] = None) -> str:
-        """Return a DNS-safe subdomain."""
-        subdomain = (custom_subdomain or project).strip().lower()
+    def sanitize_dns_name(self, subdomain: str) -> str:
+        """Return a DNS-safe subdomain label."""
+        subdomain = subdomain.strip().lower()
         sanitized = subdomain.replace("_", "-")
         if not re.fullmatch(r"[a-z0-9-]+", sanitized):
             raise ValueError("Subdomain must contain only letters, numbers, and hyphens")
@@ -422,56 +422,34 @@ class DNSManager:
         return sanitized
 
     def normalize_subdomain(self, subdomain: str) -> Optional[str]:
-        """Validate and normalize a user-facing subdomain label."""
-        candidate = subdomain.strip().lower()
-        if not candidate:
-            return None
-        if "." in candidate:
-            return None
-
+        """Best-effort parse for stored/optional values; returns None instead of raising."""
         try:
-            return self.sanitize_dns_name(project=candidate, custom_subdomain=candidate)
+            return self.sanitize_dns_name(subdomain)
         except ValueError:
             return None
 
-    def normalize_stored_subdomain(self, stored_value: str) -> Optional[str]:
-        """Normalize a stored DNS value (subdomain label)."""
-        return self.normalize_subdomain(stored_value)
-
-    def assign_cname_to_instance(
+    def assign_cname(
         self,
-        project: str,
+        subdomain: str,
         instance_public_dns: str,
-        custom_subdomain: Optional[str] = None,
     ) -> Optional[str]:
         """Create or reuse a CNAME for the instance. Returns FQDN or None."""
         if not self.provider:
             LOG.info("DNS not configured; skipping CNAME assignment")
             return None
 
-        if custom_subdomain is None:
-            subdomain = self.sanitize_dns_name(project)
-        else:
-            subdomain = self.normalize_subdomain(custom_subdomain)
-            if not subdomain:
-                raise ValueError("Subdomain must not include domain suffixes")
-        record = self.provider.create_cname(subdomain, instance_public_dns)
+        normalized_subdomain = self.sanitize_dns_name(subdomain)
+        record = self.provider.create_cname(normalized_subdomain, instance_public_dns)
         return record.name if record else None
 
-    def remove_cname_for_project(
+    def remove_cname(
         self,
-        project: str,
-        custom_subdomain: Optional[str] = None,
+        subdomain: str,
     ) -> bool:
-        """Remove a project's CNAME if it exists."""
+        """Remove a CNAME by subdomain label if it exists."""
         if not self.provider:
             LOG.info("DNS not configured; skipping CNAME removal")
             return False
 
-        if custom_subdomain is None:
-            subdomain = self.sanitize_dns_name(project)
-        else:
-            subdomain = self.normalize_subdomain(custom_subdomain)
-            if not subdomain:
-                raise ValueError("Subdomain must not include domain suffixes")
-        return self.provider.delete_cname(subdomain)
+        normalized_subdomain = self.sanitize_dns_name(subdomain)
+        return self.provider.delete_cname(normalized_subdomain)
