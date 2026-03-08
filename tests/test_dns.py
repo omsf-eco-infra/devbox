@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import boto3
 import pytest
+import requests
 from moto import mock_aws
 
 from devbox.dns import (
@@ -47,6 +48,16 @@ class FakeSession:
         return self.responses.pop(0)
 
 
+class FailingSession:
+    def __init__(self, error: requests.RequestException) -> None:
+        self.error = error
+        self.calls: List[Dict[str, Any]] = []
+
+    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        self.calls.append({"method": method, "url": url, **kwargs})
+        raise self.error
+
+
 class StubProvider:
     def __init__(self) -> None:
         self.zone_name = "example.com"
@@ -67,6 +78,18 @@ class StubProvider:
 
 
 class TestCloudflareProvider:
+    def test_request_wraps_requests_exception(self):
+        session = FailingSession(requests.Timeout("timed out"))
+        provider = CloudflareProvider(
+            api_token="token",
+            zone_id="zone123",
+            zone_name="example.com",
+            session=session,
+        )
+
+        with pytest.raises(DNSProviderError, match="Cloudflare API request failed"):
+            provider.get_cname("app")
+
     def test_resolves_zone_id_from_zone_name(self):
         session = FakeSession(
             [

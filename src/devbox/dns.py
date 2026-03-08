@@ -15,6 +15,7 @@ from botocore.exceptions import ClientError
 from . import utils
 
 DEFAULT_TTL = 300
+DEFAULT_CLOUDFLARE_TIMEOUT_SECONDS = 10.0
 LOG = logging.getLogger(__name__)
 
 
@@ -58,12 +59,14 @@ class CloudflareProvider(DNSProvider):
         session: Optional[requests.Session] = None,
         max_retries: int = 3,
         backoff_seconds: float = 1.0,
+        request_timeout_seconds: float = DEFAULT_CLOUDFLARE_TIMEOUT_SECONDS,
     ) -> None:
         self.api_token = api_token
         self.zone_name = zone_name.rstrip(".")
         self.session = session or requests.Session()
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
+        self.request_timeout_seconds = request_timeout_seconds
         self.zone_id = zone_id or self._resolve_zone_id()
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Dict[str, Any]:
@@ -72,9 +75,14 @@ class CloudflareProvider(DNSProvider):
         headers = kwargs.pop("headers", {})
         headers["Authorization"] = f"Bearer {self.api_token}"
         headers["Content-Type"] = "application/json"
+        kwargs.setdefault("timeout", self.request_timeout_seconds)
 
         for attempt in range(1, self.max_retries + 1):
-            response = self.session.request(method, url, headers=headers, **kwargs)
+            try:
+                response = self.session.request(method, url, headers=headers, **kwargs)
+            except requests.RequestException as exc:
+                LOG.error("Cloudflare API request failed (%s %s): %s", method, path, exc)
+                raise DNSProviderError(f"Cloudflare API request failed: {exc}") from exc
             if response.status_code == 429 and attempt < self.max_retries:
                 time.sleep(self.backoff_seconds * attempt)
                 continue
