@@ -9,6 +9,7 @@ from moto import mock_aws
 
 
 from devbox.devbox_manager import DevBoxManager
+from devbox import utils
 
 
 
@@ -578,11 +579,36 @@ class TestDevBoxManager:
             self.manager.terminate_instance("multi-project")
         assert "Multiple instances found" in str(excinfo.value)
 
-    def test_terminate_instance_not_found(self):
-        """Test terminating non-existent instance."""
-        with pytest.raises(Exception) as excinfo:
-            self.manager.terminate_instance("i-nonexistent")
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "i-1234567890abcdef0",
+            "not-an-instance-id",
+        ],
+    )
+    def test_terminate_instance_not_found_maps_to_resource_not_found(self, identifier):
+        """Test missing instances map to ResourceNotFoundError using Moto behavior."""
+        with pytest.raises(utils.ResourceNotFoundError) as excinfo:
+            self.manager.terminate_instance(identifier)
         assert "No instance found" in str(excinfo.value)
+
+    def test_terminate_instance_non_not_found_client_error_surfaces_aws_error(self):
+        """Test non-not-found describe errors are wrapped as AWSClientError."""
+        access_denied = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Denied"}},
+            "DescribeInstances",
+        )
+
+        with patch.object(self.manager, "list_instances", return_value=[]):
+            with patch.object(
+                self.manager.ec2,
+                "describe_instances",
+                side_effect=access_denied,
+            ):
+                with pytest.raises(utils.AWSClientError) as excinfo:
+                    self.manager.terminate_instance("i-1234567890abcdef0")
+
+        assert "Error terminating instance: AccessDenied" in str(excinfo.value)
 
     def test_terminate_instance_no_project_tag(self):
         """Test terminating instance without Project tag."""
@@ -618,8 +644,8 @@ class TestDevBoxManager:
     def test_terminate_instance_error_codes(self, aws_error_scenario):
         """Test terminate_instance with various error scenarios."""
         if aws_error_scenario == "instance_not_found":
-            with pytest.raises(Exception) as excinfo:
-                self.manager.terminate_instance("i-nonexistent")
+            with pytest.raises(utils.ResourceNotFoundError) as excinfo:
+                self.manager.terminate_instance("i-1234567890abcdef0")
             assert "No instance found" in str(excinfo.value)
 
         elif aws_error_scenario == "multiple_instances":

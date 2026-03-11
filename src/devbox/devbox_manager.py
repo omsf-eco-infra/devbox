@@ -360,7 +360,18 @@ class DevBoxManager:
                         raise utils.DevBoxError(
                             f"Instance {identifier} is not managed by devbox (missing Project tag)."
                         )
-                except (ClientError, KeyError, IndexError):
+                except ClientError as e:
+                    error_code = e.response.get('Error', {}).get('Code', 'UnknownError')
+                    if error_code in (
+                        "InvalidInstanceID.NotFound",
+                        "InvalidInstanceID.Malformed",
+                    ):
+                        raise utils.ResourceNotFoundError(
+                            f"No instance found with ID or project name: {identifier}"
+                        )
+                    # Allow non-not-found client errors to bubble to outer handler.
+                    raise
+                except (KeyError, IndexError):
                     raise utils.ResourceNotFoundError(
                         f"No instance found with ID or project name: {identifier}"
                     )
