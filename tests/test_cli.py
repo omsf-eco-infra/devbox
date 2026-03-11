@@ -554,6 +554,27 @@ class TestDeleteProjectCommand:
 
     @patch("devbox.cli.DevBoxManager")
     @patch("devbox.cli.ConsoleOutput")
+    def test_delete_project_no_ami_recorded_still_deletes_entry(
+        self, mock_console_class, mock_manager_class
+    ):
+        """Project records can exist without AMI metadata (legacy/partial table entries)."""
+        mock_console = MagicMock()
+        mock_manager = MagicMock()
+        mock_console_class.return_value = mock_console
+        mock_manager_class.return_value = mock_manager
+
+        mock_manager.get_project_item.return_value = {"project": "demo"}
+        mock_manager.project_in_use.return_value = (False, "")
+
+        result = self.runner.invoke(cli, ["delete-project", "demo", "--force"])
+
+        assert result.exit_code == 0
+        mock_manager.delete_ami_and_snapshots.assert_not_called()
+        mock_manager.delete_project_entry.assert_called_once_with("demo")
+        mock_console.print_warning.assert_called_once()
+
+    @patch("devbox.cli.DevBoxManager")
+    @patch("devbox.cli.ConsoleOutput")
     def test_delete_project_ami_cleanup_failure_does_not_delete_entry(
         self, mock_console_class, mock_manager_class
     ):
@@ -572,6 +593,56 @@ class TestDeleteProjectCommand:
         mock_manager.delete_ami_and_snapshots.assert_called_once_with("ami-12345678")
         mock_manager.delete_project_entry.assert_not_called()
         mock_console.print_error.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "scenario,expected_error,expect_project_in_use_called,expect_delete_entry_called",
+        [
+            ("get_project_item", "lookup failed", False, False),
+            ("project_in_use", "usage check failed", True, False),
+            ("delete_project_entry", "delete failed", True, True),
+        ],
+    )
+    @patch("devbox.cli.DevBoxManager")
+    @patch("devbox.cli.ConsoleOutput")
+    def test_delete_project_exceptions(
+        self,
+        mock_console_class,
+        mock_manager_class,
+        scenario,
+        expected_error,
+        expect_project_in_use_called,
+        expect_delete_entry_called,
+    ):
+        mock_console = MagicMock()
+        mock_manager = MagicMock()
+        mock_console_class.return_value = mock_console
+        mock_manager_class.return_value = mock_manager
+
+        if scenario == "get_project_item":
+            mock_manager.get_project_item.side_effect = Exception("lookup failed")
+        else:
+            mock_manager.get_project_item.return_value = {"project": "demo"}
+            if scenario == "project_in_use":
+                mock_manager.project_in_use.side_effect = Exception("usage check failed")
+            else:
+                mock_manager.project_in_use.return_value = (False, "")
+                mock_manager.delete_project_entry.side_effect = Exception("delete failed")
+
+        result = self.runner.invoke(cli, ["delete-project", "demo", "--force"])
+
+        assert result.exit_code == 1
+        mock_manager.delete_ami_and_snapshots.assert_not_called()
+        if expect_project_in_use_called:
+            mock_manager.project_in_use.assert_called_once_with("demo", {"project": "demo"})
+        else:
+            mock_manager.project_in_use.assert_not_called()
+        if expect_delete_entry_called:
+            mock_manager.delete_project_entry.assert_called_once_with("demo")
+        else:
+            mock_manager.delete_project_entry.assert_not_called()
+        mock_console.print_error.assert_called_once_with(
+            f"Failed to delete project: {expected_error}"
+        )
 
 
 @patch("devbox.cli.cli")
