@@ -687,7 +687,7 @@ class TestDevBoxManager:
         assert in_use is True
         assert "EC2 instances" in reason
 
-    @pytest.mark.parametrize("state", ["stopped", "stopping", "shutting-down"])
+    @pytest.mark.parametrize("state", ["pending", "stopped", "stopping", "shutting-down"])
     def test_project_in_use_with_non_running_states(self, state):
         """Test project_in_use detects non-running instance states."""
         def fake_describe_instances(**_kwargs):
@@ -903,3 +903,19 @@ class TestDevBoxManager:
 
         resp = table.get_item(Key={"project": "demo"})
         assert "Item" not in resp
+
+    def test_delete_project_entry_client_error(self):
+        """Test delete_project_entry wraps DynamoDB failures as AWSClientError."""
+
+        class FakeTable:
+            def delete_item(self, **_kwargs):
+                raise ClientError(
+                    {"Error": {"Code": "AccessDeniedException", "Message": "Denied"}},
+                    "DeleteItem",
+                )
+
+        with patch.object(self.manager, "get_table", return_value=FakeTable()):
+            with pytest.raises(utils.AWSClientError) as excinfo:
+                self.manager.delete_project_entry("demo")
+
+        assert "Failed to delete project 'demo' from the main table" in str(excinfo.value)
