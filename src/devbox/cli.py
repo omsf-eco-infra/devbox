@@ -147,23 +147,24 @@ def delete_project(ctx, project: str, force: bool):
                 console.print_warning("Project deletion cancelled.")
                 return
 
+        ami_id = item.get("AMI")
+        if ami_id:
+            if not force and not click.confirm(
+                f"Also delete AMI {ami_id} and its backing snapshot(s)?"
+            ):
+                console.print_warning(
+                    "AMI cleanup cancelled. Continuing with project entry deletion only."
+                )
+            else:
+                result = manager.delete_ami_and_snapshots(ami_id)
+                console.print_success(
+                    f"Deregistered AMI {result['ami_id']} and deleted {result['snapshot_count']} snapshot(s)."
+                )
+        else:
+            console.print_warning(f"No AMI recorded for project '{project}'.")
+
         manager.delete_project_entry(project)
         console.print_success(f"Deleted project '{project}' from the main table.")
-
-        ami_id = item.get("AMI")
-        if not ami_id:
-            console.print_warning(f"No AMI recorded for project '{project}'.")
-            return
-
-        if not force:
-            if not click.confirm(f"Also delete AMI {ami_id} and its backing snapshot(s)?"):
-                console.print_warning("AMI cleanup cancelled.")
-                return
-
-        result = manager.delete_ami_and_snapshots(ami_id)
-        console.print_success(
-            f"Deregistered AMI {result['ami_id']} and deleted {result['snapshot_count']} snapshot(s)."
-        )
 
     except Exception as e:
         console.print_error(f"Failed to delete project: {str(e)}")

@@ -473,6 +473,13 @@ class TestDeleteProjectCommand:
         assert result.exit_code == 0
         mock_manager.delete_project_entry.assert_called_once_with("demo")
         mock_manager.delete_ami_and_snapshots.assert_called_once_with("ami-12345678")
+        mock_manager.assert_has_calls(
+            [
+                call.delete_ami_and_snapshots("ami-12345678"),
+                call.delete_project_entry("demo"),
+            ],
+            any_order=False,
+        )
 
     @patch("devbox.cli.DevBoxManager")
     @patch("devbox.cli.ConsoleOutput")
@@ -544,6 +551,27 @@ class TestDeleteProjectCommand:
         mock_manager.delete_project_entry.assert_called_once_with("demo")
         mock_manager.delete_ami_and_snapshots.assert_not_called()
         mock_console.print_warning.assert_called_once()
+
+    @patch("devbox.cli.DevBoxManager")
+    @patch("devbox.cli.ConsoleOutput")
+    def test_delete_project_ami_cleanup_failure_does_not_delete_entry(
+        self, mock_console_class, mock_manager_class
+    ):
+        mock_console = MagicMock()
+        mock_manager = MagicMock()
+        mock_console_class.return_value = mock_console
+        mock_manager_class.return_value = mock_manager
+
+        mock_manager.get_project_item.return_value = {"project": "demo", "AMI": "ami-12345678"}
+        mock_manager.project_in_use.return_value = (False, "")
+        mock_manager.delete_ami_and_snapshots.side_effect = AWSClientError("AMI cleanup failed")
+
+        result = self.runner.invoke(cli, ["delete-project", "demo", "--force"])
+
+        assert result.exit_code == 1
+        mock_manager.delete_ami_and_snapshots.assert_called_once_with("ami-12345678")
+        mock_manager.delete_project_entry.assert_not_called()
+        mock_console.print_error.assert_called_once()
 
 
 @patch("devbox.cli.cli")
