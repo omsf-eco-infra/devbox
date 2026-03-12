@@ -151,11 +151,12 @@ def new(ctx, project: str, base_ami: str, param_prefix: str):
 @cli.command()
 @click.argument('project')
 @click.option('--force', is_flag=True, help='Skip confirmation prompts')
+@param_prefix_option
 @click.pass_context
-def delete_project(ctx, project: str, force: bool):
+def delete_project(ctx, project: str, force: bool, param_prefix: str):
     """Delete a DevBox project and its AMI/snapshots."""
     console = ctx.obj['console']
-    manager = ctx.obj['manager']
+    manager = get_manager(console, param_prefix)
 
     try:
         item = manager.get_project_item(project)

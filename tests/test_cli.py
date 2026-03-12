@@ -239,7 +239,10 @@ class TestTerminateCommand:
         mock_manager = MagicMock()
         mock_console_class.return_value = mock_console
         mock_manager_class.return_value = mock_manager
-        mock_manager.terminate_instance.return_value = (True, "Terminated")
+        mock_manager.terminate_instance.return_value = {
+            "instance_id": "i-1234567890abcdef0",
+            "project": "test-project",
+        }
 
         result = self.runner.invoke(
             cli, ["terminate", "i-1234567890abcdef0", "--param-prefix", "/custom"]
@@ -491,6 +494,7 @@ class TestDeleteProjectCommand:
         assert "Delete a DevBox project" in result.output
         assert "PROJECT" in result.output
         assert "--force" in result.output
+        assert "--param-prefix" in result.output
 
     @patch("devbox.cli.DevBoxManager")
     @patch("devbox.cli.ConsoleOutput")
@@ -682,6 +686,29 @@ class TestDeleteProjectCommand:
         mock_console.print_error.assert_called_once_with(
             f"Failed to delete project: {expected_error}"
         )
+
+    @patch("devbox.cli.DevBoxManager")
+    @patch("devbox.cli.ConsoleOutput")
+    def test_delete_project_with_param_prefix_option(
+        self, mock_console_class, mock_manager_class
+    ):
+        mock_console = MagicMock()
+        mock_manager = MagicMock()
+        mock_console_class.return_value = mock_console
+        mock_manager_class.return_value = mock_manager
+
+        mock_manager.get_project_item.return_value = {"project": "demo"}
+        mock_manager.project_in_use.return_value = (False, "")
+
+        result = self.runner.invoke(
+            cli,
+            ["delete-project", "demo", "--force", "--param-prefix", "/custom/devbox"],
+        )
+
+        assert result.exit_code == 0
+        mock_manager_class.assert_called_once_with(prefix="custom/devbox")
+        mock_manager.delete_ami_and_snapshots.assert_not_called()
+        mock_manager.delete_project_entry.assert_called_once_with("demo")
 
 
 @patch("devbox.cli.cli")
@@ -980,7 +1007,10 @@ class TestParamPrefixEnvironmentOverrides:
         mock_manager = MagicMock()
         mock_console_class.return_value = mock_console
         mock_manager_class.return_value = mock_manager
-        mock_manager.terminate_instance.return_value = (True, "Terminated")
+        mock_manager.terminate_instance.return_value = {
+            "instance_id": "i-1234567890abcdef0",
+            "project": "test-project",
+        }
 
         result = self.runner.invoke(
             cli,
@@ -990,6 +1020,28 @@ class TestParamPrefixEnvironmentOverrides:
 
         assert result.exit_code == 0
         mock_manager_class.assert_called_once_with(prefix="env/devbox")
+
+    @patch("devbox.cli.DevBoxManager")
+    @patch("devbox.cli.ConsoleOutput")
+    def test_delete_project_uses_param_prefix_from_env(
+        self, mock_console_class, mock_manager_class
+    ):
+        mock_console = MagicMock()
+        mock_manager = MagicMock()
+        mock_console_class.return_value = mock_console
+        mock_manager_class.return_value = mock_manager
+        mock_manager.get_project_item.return_value = {"project": "test-project"}
+        mock_manager.project_in_use.return_value = (False, "")
+
+        result = self.runner.invoke(
+            cli,
+            ["delete-project", "test-project", "--force"],
+            env={"DEVBOX_PARAM_PREFIX": "/env/devbox"},
+        )
+
+        assert result.exit_code == 0
+        mock_manager_class.assert_called_once_with(prefix="env/devbox")
+        mock_manager.delete_project_entry.assert_called_once_with("test-project")
 
     @patch("devbox.launch.launch_programmatic")
     @patch("devbox.cli.ConsoleOutput")
