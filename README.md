@@ -154,4 +154,4 @@ set up yet. Wait a few seconds and try again.
 
 This probably means that the DNS cache on your local machine has not updated yet with the new IP address for the DevBox (and should only happen if you are using DevBox with a DNS provider configured).
 
-On MacOS, you can flush the DNS cache with `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`.
+On macOS, you can flush the DNS cache with `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`. On Ubuntu-based systems you can use `sudo resolvectl flush-caches`.
