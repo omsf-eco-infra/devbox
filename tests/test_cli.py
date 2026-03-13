@@ -284,7 +284,7 @@ class TestLaunchCommand:
         assert "PROJECT" in result.output  # Now a positional argument
         assert "--instance-type" in result.output
         assert "--key-pair" in result.output
-        assert "--assign-dns / --no-assign-dns" in result.output
+        assert "--no-assign-dns" in result.output
         assert "--dns-subdomain" in result.output
 
     @patch("devbox.launch.launch_programmatic")

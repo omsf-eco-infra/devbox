@@ -102,10 +102,10 @@ def terminate(ctx, instance_id: str, param_prefix: str):
 @click.option('--volume-size', type=int, default=0, help='Root volume size in GB')
 @click.option('--base-ami', help='Base AMI ID for new instances')
 @click.option(
-    '--assign-dns/--no-assign-dns',
-    default=True,
-    show_default=True,
-    help='Assign a DNS CNAME for the instance (defaults to true if DNS is configured)',
+    '--no-assign-dns',
+    is_flag=True,
+    default=False,
+    help='Do not assign a DNS CNAME for the instance (DNS is assigned by default when configured)',
 )
 @click.option(
     '--dns-subdomain',
@@ -114,7 +114,7 @@ def terminate(ctx, instance_id: str, param_prefix: str):
 @param_prefix_option
 @click.pass_context
 def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[str],
-          volume_size: int, base_ami: Optional[str], assign_dns: bool,
+          volume_size: int, base_ami: Optional[str], no_assign_dns: bool,
           dns_subdomain: Optional[str], param_prefix: str):
     """Launch a new DevBox instance.
 
@@ -132,7 +132,7 @@ def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[s
             volume_size=volume_size,
             base_ami=base_ami,
             param_prefix=param_prefix,
-            assign_dns=assign_dns,
+            assign_dns=not no_assign_dns,
             dns_subdomain=dns_subdomain,
         )
     except Exception as e:

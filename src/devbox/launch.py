@@ -66,10 +66,11 @@ def make_parser() -> argparse.ArgumentParser:
                        type=int,
                        default=0,
                        help="Minimum size (GiB) for the root EBS volume")
-    parser.add_argument("--assign-dns",
-                       action=argparse.BooleanOptionalAction,
+    parser.add_argument("--no-assign-dns",
+                       action="store_false",
+                       dest="assign_dns",
                        default=True,
-                       help="Assign a DNS CNAME for the instance (defaults to true if DNS is configured)")
+                       help="Do not assign a DNS CNAME for the instance (DNS is assigned by default when configured)")
     parser.add_argument("--dns-subdomain",
                        default=None,
                        help="Custom subdomain to use instead of the project name")

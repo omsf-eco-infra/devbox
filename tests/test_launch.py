@@ -465,6 +465,22 @@ def test_parse_arguments_valid():
         assert args.instance_type == "t3.medium"
         assert args.key_pair == "test-key"
         assert args.volume_size == 100
+        assert args.assign_dns is True
+
+
+def test_parse_arguments_no_assign_dns():
+    """Test parsing the DNS opt-out flag."""
+    test_args = [
+        "--project",
+        "test-project",
+        "--no-assign-dns",
+    ]
+
+    with patch.object(sys, "argv", ["launch.py"] + test_args):
+        args = parse_arguments()
+
+        assert args.project == "test-project"
+        assert args.assign_dns is False
 
 
 def test_parse_arguments_invalid_project_name():
