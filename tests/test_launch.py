@@ -102,6 +102,8 @@ def test_make_parser_optional_arguments():
     assert args.volume_size == 0
     assert args.base_ami is None
     assert args.param_prefix == "/devbox"
+    assert args.assign_dns is True
+    assert args.dns_subdomain is None
 
     # Test with only required arguments (instance-type and key-pair are now optional)
     args_minimal = parser.parse_args(["--project", "test-project"])
@@ -111,6 +113,8 @@ def test_make_parser_optional_arguments():
     assert args_minimal.volume_size == 0
     assert args_minimal.base_ami is None
     assert args_minimal.param_prefix == "/devbox"
+    assert args_minimal.assign_dns is True
+    assert args_minimal.dns_subdomain is None
 
 
 # Test functions for get_project_snapshot
@@ -361,6 +365,26 @@ def test_update_instance_status_new_project(mock_table):
     assert call_args["LastKeyPair"] == "test-keypair"
 
 
+def test_update_instance_status_nonexistent_without_instance_info(mock_table):
+    """Test nonexistent status works even when instance metadata is unavailable."""
+    update_instance_status(
+        mock_table,
+        "test-project",
+        "nonexistent",
+        "i-12345",
+        "ami-12345",
+        "t3.medium",
+        "test-keypair",
+        instance_info={},
+    )
+
+    mock_table.put_item.assert_called_once()
+    call_args = mock_table.put_item.call_args[1]["Item"]
+    assert call_args["project"] == "test-project"
+    assert call_args["Status"] == "RUNNING"
+    assert call_args["InstanceId"] == "i-12345"
+
+
 def test_update_instance_status_existing_project(mock_table):
     """Test updating instance status for existing project."""
     existing_item = {
@@ -399,6 +423,25 @@ def test_update_instance_status_invalid_status(mock_table):
         )
 
 
+def test_update_instance_status_sets_cname(mock_table):
+    """Test CNAMEDomain is set when provided."""
+    mock_table.get_item.return_value = {}
+
+    update_instance_status(
+        mock_table,
+        "test-project",
+        "LAUNCHING",
+        "i-12345",
+        "ami-12345",
+        "t3.medium",
+        "test-keypair",
+        cname_domain="dev.example.com",
+    )
+
+    call_args = mock_table.put_item.call_args[1]["Item"]
+    assert call_args["CNAMEDomain"] == "dev.example.com"
+
+
 # Test functions for parse_arguments
 
 
@@ -422,6 +465,22 @@ def test_parse_arguments_valid():
         assert args.instance_type == "t3.medium"
         assert args.key_pair == "test-key"
         assert args.volume_size == 100
+        assert args.assign_dns is True
+
+
+def test_parse_arguments_no_assign_dns():
+    """Test parsing the DNS opt-out flag."""
+    test_args = [
+        "--project",
+        "test-project",
+        "--no-assign-dns",
+    ]
+
+    with patch.object(sys, "argv", ["launch.py"] + test_args):
+        args = parse_arguments()
+
+        assert args.project == "test-project"
+        assert args.assign_dns is False
 
 
 def test_parse_arguments_invalid_project_name():
@@ -782,7 +841,7 @@ def test_launch_programmatic_success(
         {"State": {"Name": "running"}},
     )
 
-    launch_programmatic("test-project", instance_type="t3.medium", key_pair="test-key")
+    launch_programmatic("test-project", instance_type="t3.medium", key_pair="test-key", assign_dns=False)
 
     mock_init_aws.assert_called_once()
     mock_display.assert_called_once()
@@ -841,7 +900,7 @@ def test_launch_programmatic_uses_last_keypair(
     )
 
     # Call with key_pair=None
-    launch_programmatic("test-project", instance_type="t3.medium", key_pair=None)
+    launch_programmatic("test-project", instance_type="t3.medium", key_pair=None, assign_dns=False)
 
     # Verify launch_instance_in_azs was called with the last keypair
     mock_launch_azs.assert_called_once()
@@ -870,7 +929,7 @@ def test_launch_programmatic_no_keypair_error(
 
     # Should raise SystemExit when no keypair provided and none stored
     with pytest.raises(SystemExit) as exc_info:
-        launch_programmatic("test-project", instance_type="t3.medium", key_pair=None)
+        launch_programmatic("test-project", instance_type="t3.medium", key_pair=None, assign_dns=False)
     assert exc_info.value.code == 4
 
 
@@ -923,7 +982,7 @@ def test_launch_programmatic_uses_last_instance_type(
     )
 
     # Call with instance_type=None
-    launch_programmatic("test-project", instance_type=None, key_pair="test-keypair")
+    launch_programmatic("test-project", instance_type=None, key_pair="test-keypair", assign_dns=False)
 
     # Verify launch_instance_in_azs was called with the last instance type
     mock_launch_azs.assert_called_once()
@@ -955,7 +1014,7 @@ def test_launch_programmatic_no_instance_type_error(
 
     # Should raise SystemExit when no instance type provided and none stored
     with pytest.raises(SystemExit) as exc_info:
-        launch_programmatic("test-project", instance_type=None, key_pair="test-keypair")
+        launch_programmatic("test-project", instance_type=None, key_pair="test-keypair", assign_dns=False)
     assert exc_info.value.code == 4
 
 
@@ -1008,7 +1067,7 @@ def test_launch_programmatic_uses_both_last_values(
     )
 
     # Call with both instance_type=None and key_pair=None
-    launch_programmatic("test-project", instance_type=None, key_pair=None)
+    launch_programmatic("test-project", instance_type=None, key_pair=None, assign_dns=False)
 
     # Verify launch_instance_in_azs was called with both last values
     mock_launch_azs.assert_called_once()
@@ -1147,7 +1206,7 @@ def test_launch_programmatic_determines_username():
             "Images": [{"Name": "amzn2-ami-hvm", "Description": "Amazon Linux 2"}]
         }
 
-        launch_programmatic("test-project")
+        launch_programmatic("test-project", assign_dns=False)
 
         # Verify that username was determined and stored
         mock_table.update_item.assert_called()
@@ -1176,6 +1235,8 @@ def test_main_success(mock_launch, mock_parse):
     mock_args.volume_size = 100
     mock_args.base_ami = "ami-12345"
     mock_args.param_prefix = "/test"
+    mock_args.assign_dns = True
+    mock_args.dns_subdomain = None
     mock_parse.return_value = mock_args
 
     main()
@@ -1187,6 +1248,8 @@ def test_main_success(mock_launch, mock_parse):
         volume_size=100,
         base_ami="ami-12345",
         param_prefix="/test",
+        assign_dns=True,
+        dns_subdomain=None,
     )
 
 
