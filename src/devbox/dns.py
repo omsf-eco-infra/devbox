@@ -3,14 +3,13 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Protocol
+from typing import Any, NoReturn, Optional, Protocol
 
 import boto3
-import requests
 from botocore.client import BaseClient
 from botocore.exceptions import ClientError
+from cloudflare import APIConnectionError, APIStatusError, Cloudflare
 
 from . import utils
 
@@ -49,70 +48,136 @@ class DNSProvider(Protocol):
 
 
 class CloudflareProvider(DNSProvider):
-    """Cloudflare DNS provider implementation using REST API."""
+    """Cloudflare DNS provider implementation using the official SDK."""
 
     def __init__(
         self,
         api_token: str,
         zone_name: str,
         zone_id: Optional[str] = None,
-        session: Optional[requests.Session] = None,
+        client: Optional[Cloudflare] = None,
         max_retries: int = 3,
-        backoff_seconds: float = 1.0,
         request_timeout_seconds: float = DEFAULT_CLOUDFLARE_TIMEOUT_SECONDS,
     ) -> None:
-        self.api_token = api_token
         self.zone_name = zone_name.rstrip(".")
-        self.session = session or requests.Session()
-        self.max_retries = max_retries
-        self.backoff_seconds = backoff_seconds
-        self.request_timeout_seconds = request_timeout_seconds
+        self.client = client or self._build_client(
+            api_token=api_token,
+            request_timeout_seconds=request_timeout_seconds,
+            max_retries=max_retries,
+        )
         self.zone_id = zone_id or self._resolve_zone_id()
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> Dict[str, Any]:
-        """Perform a Cloudflare API request with basic retry on 429."""
-        url = f"https://api.cloudflare.com/client/v4{path}"
-        headers = kwargs.pop("headers", {})
-        headers["Authorization"] = f"Bearer {self.api_token}"
-        headers["Content-Type"] = "application/json"
-        kwargs.setdefault("timeout", self.request_timeout_seconds)
+    @staticmethod
+    def _build_client(
+        *,
+        api_token: str,
+        request_timeout_seconds: float,
+        max_retries: int,
+    ) -> Cloudflare:
+        return Cloudflare(
+            api_token=api_token,
+            timeout=request_timeout_seconds,
+            max_retries=max(max_retries - 1, 0),
+        )
 
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                response = self.session.request(method, url, headers=headers, **kwargs)
-            except requests.RequestException as exc:
-                LOG.error("Cloudflare API request failed (%s %s): %s", method, path, exc)
-                raise DNSProviderError(f"Cloudflare API request failed: {exc}") from exc
-            if response.status_code == 429 and attempt < self.max_retries:
-                time.sleep(self.backoff_seconds * attempt)
-                continue
+    @staticmethod
+    def _status_error_message(exc: APIStatusError) -> str:
+        if isinstance(exc.body, dict):
+            errors = exc.body.get("errors") or []
+            if errors:
+                return errors[0].get("message", str(exc))
+        return str(exc)
 
-            try:
-                payload = response.json()
-            except ValueError:
-                payload = {}
+    def _raise_cloudflare_error(
+        self,
+        operation: str,
+        exc: APIConnectionError | APIStatusError,
+    ) -> NoReturn:
+        if isinstance(exc, APIConnectionError):
+            LOG.error("Cloudflare API request failed during %s: %s", operation, exc)
+            raise DNSProviderError(f"Cloudflare API request failed: {exc}") from exc
 
-            if response.ok and payload.get("success", False):
-                return payload
-
-            errors = payload.get("errors") or []
-            message = errors[0].get("message") if errors else response.text
-            LOG.error("Cloudflare API error (%s): %s", response.status_code, message)
-            raise DNSProviderError(message)
-
-        raise DNSProviderError("Exceeded Cloudflare API retry attempts")
+        message = self._status_error_message(exc)
+        LOG.error("Cloudflare API error (%s): %s", exc.response.status_code, message)
+        raise DNSProviderError(message) from exc
 
     def _fqdn(self, subdomain: str) -> str:
         return f"{subdomain}.{self.zone_name}"
 
+    def _record_from_cloudflare(
+        self,
+        record: Any,
+        *,
+        fallback_name: str,
+        fallback_target: str = "",
+        fallback_record_id: Optional[str] = None,
+    ) -> CNAMERecord:
+        return CNAMERecord(
+            name=str(getattr(record, "name", fallback_name)),
+            target=str(getattr(record, "content", fallback_target)),
+            ttl=getattr(record, "ttl", None),
+            provider_record_id=getattr(record, "id", fallback_record_id),
+        )
+
+    def _list_cname_records(self, fqdn: str) -> list[Any]:
+        try:
+            return list(
+                self.client.dns.records.list(
+                    zone_id=self.zone_id,
+                    type="CNAME",
+                    name=fqdn,
+                )
+            )
+        except (APIConnectionError, APIStatusError) as exc:
+            self._raise_cloudflare_error("DNS record lookup", exc)
+
+    def _create_record(self, *, fqdn: str, target: str) -> Any:
+        try:
+            return self.client.dns.records.create(
+                zone_id=self.zone_id,
+                type="CNAME",
+                name=fqdn,
+                content=target,
+                ttl=DEFAULT_TTL,
+                proxied=False,
+            )
+        except (APIConnectionError, APIStatusError) as exc:
+            self._raise_cloudflare_error("DNS record create", exc)
+
+    def _update_record(self, *, record_id: str, fqdn: str, target: str) -> Any:
+        try:
+            return self.client.dns.records.update(
+                record_id,
+                zone_id=self.zone_id,
+                type="CNAME",
+                name=fqdn,
+                content=target,
+                ttl=DEFAULT_TTL,
+                proxied=False,
+            )
+        except (APIConnectionError, APIStatusError) as exc:
+            self._raise_cloudflare_error("DNS record update", exc)
+
+    def _delete_record(self, record_id: str) -> None:
+        try:
+            self.client.dns.records.delete(
+                record_id,
+                zone_id=self.zone_id,
+            )
+        except (APIConnectionError, APIStatusError) as exc:
+            self._raise_cloudflare_error("DNS record delete", exc)
+
     def _resolve_zone_id(self) -> str:
         """Resolve Cloudflare zone ID from configured zone name."""
-        payload = self._request("GET", "/zones", params={"name": self.zone_name})
-        zones = payload.get("result", [])
+        try:
+            zones = list(self.client.zones.list(name=self.zone_name))
+        except (APIConnectionError, APIStatusError) as exc:
+            self._raise_cloudflare_error("zone lookup", exc)
+
         matches = [
             zone
             for zone in zones
-            if str(zone.get("name", "")).rstrip(".").lower() == self.zone_name.lower()
+            if str(getattr(zone, "name", "")).rstrip(".").lower() == self.zone_name.lower()
         ]
 
         if not matches:
@@ -122,7 +187,7 @@ class CloudflareProvider(DNSProvider):
                 f"Cloudflare zone lookup for '{self.zone_name}' is ambiguous ({len(matches)} matches)"
             )
 
-        zone_id = str(matches[0].get("id", "")).strip()
+        zone_id = str(getattr(matches[0], "id", "")).strip()
         if not zone_id:
             raise DNSProviderError(
                 f"Cloudflare zone '{self.zone_name}' resolved without a usable zone id"
@@ -131,21 +196,13 @@ class CloudflareProvider(DNSProvider):
 
     def get_cname(self, subdomain: str) -> Optional[CNAMERecord]:
         name = self._fqdn(subdomain)
-        payload = self._request(
-            "GET",
-            f"/zones/{self.zone_id}/dns_records",
-            params={"type": "CNAME", "name": name},
-        )
-        records = payload.get("result", [])
+        records = self._list_cname_records(name)
         if not records:
             return None
 
-        record = records[0]
-        return CNAMERecord(
-            name=record.get("name", name),
-            target=record.get("content", ""),
-            ttl=record.get("ttl"),
-            provider_record_id=record.get("id"),
+        return self._record_from_cloudflare(
+            records[0],
+            fallback_name=name,
         )
 
     def create_cname(self, subdomain: str, target: str) -> CNAMERecord:
@@ -156,44 +213,27 @@ class CloudflareProvider(DNSProvider):
 
         # Keep Cloudflare behavior in line with Route53 UPSERT semantics.
         if existing and existing.provider_record_id:
-            payload = self._request(
-                "PUT",
-                f"/zones/{self.zone_id}/dns_records/{existing.provider_record_id}",
-                json={
-                    "type": "CNAME",
-                    "name": name,
-                    "content": target,
-                    "ttl": DEFAULT_TTL,
-                    "proxied": False,
-                },
+            record = self._update_record(
+                record_id=existing.provider_record_id,
+                fqdn=name,
+                target=target,
+            )
+            if record is None:
+                raise DNSProviderError("Cloudflare API returned no DNS record data")
+            return self._record_from_cloudflare(
+                record,
+                fallback_name=name,
+                fallback_target=target,
+                fallback_record_id=existing.provider_record_id,
             )
 
-            record = payload.get("result", {})
-            return CNAMERecord(
-                name=record.get("name", name),
-                target=record.get("content", target),
-                ttl=record.get("ttl", DEFAULT_TTL),
-                provider_record_id=record.get("id", existing.provider_record_id),
-            )
-
-        payload = self._request(
-            "POST",
-            f"/zones/{self.zone_id}/dns_records",
-            json={
-                "type": "CNAME",
-                "name": name,
-                "content": target,
-                "ttl": DEFAULT_TTL,
-                "proxied": False,
-            },
-        )
-
-        record = payload.get("result", {})
-        return CNAMERecord(
-            name=record.get("name", name),
-            target=record.get("content", target),
-            ttl=record.get("ttl", DEFAULT_TTL),
-            provider_record_id=record.get("id"),
+        record = self._create_record(fqdn=name, target=target)
+        if record is None:
+            raise DNSProviderError("Cloudflare API returned no DNS record data")
+        return self._record_from_cloudflare(
+            record,
+            fallback_name=name,
+            fallback_target=target,
         )
 
     def delete_cname(self, subdomain: str) -> bool:
@@ -201,10 +241,7 @@ class CloudflareProvider(DNSProvider):
         if not existing or not existing.provider_record_id:
             return False
 
-        self._request(
-            "DELETE",
-            f"/zones/{self.zone_id}/dns_records/{existing.provider_record_id}",
-        )
+        self._delete_record(existing.provider_record_id)
         return True
 
 
@@ -348,7 +385,7 @@ class DNSManager:
         *,
         ssm_client: Optional[BaseClient] = None,
         route53_client: Optional[BaseClient] = None,
-        http_session: Optional[requests.Session] = None,
+        cloudflare_client: Optional[Cloudflare] = None,
     ) -> "DNSManager":
         """Create a DNSManager configured from SSM parameters."""
         ssm = ssm_client or utils.get_ssm_client()
@@ -386,7 +423,7 @@ class DNSManager:
                 provider_impl = CloudflareProvider(
                     api_token=api_token,
                     zone_name=zone_name,
-                    session=http_session,
+                    client=cloudflare_client,
                 )
             except DNSProviderError as exc:
                 LOG.warning("Cloudflare provider initialization failed: %s", exc)

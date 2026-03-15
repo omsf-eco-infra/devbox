@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Dict, List
 from unittest.mock import MagicMock
 
 import boto3
+import httpx
 import pytest
-import requests
+from cloudflare import APIConnectionError, APIStatusError
 from moto import mock_aws
 
 from devbox.dns import (
@@ -21,41 +23,161 @@ from devbox.dns import (
 
 
 @dataclass
-class FakeResponse:
-    status_code: int
-    payload: Dict[str, Any]
-
-    @property
-    def ok(self) -> bool:
-        return 200 <= self.status_code < 300
-
-    def json(self) -> Dict[str, Any]:
-        return self.payload
-
-    @property
-    # Keep parity with requests.Response for error-message paths.
-    def text(self) -> str:  # pragma: no cover
-        return str(self.payload)
+class FakeZone:
+    id: str
+    name: str
 
 
-class FakeSession:
-    def __init__(self, responses: List[FakeResponse]) -> None:
+@dataclass
+class FakeRecord:
+    id: str
+    name: str
+    content: str
+    ttl: int | None = None
+
+
+class FakeZonesClient:
+    def __init__(self, responses: List[Any]) -> None:
         self.responses = responses
         self.calls: List[Dict[str, Any]] = []
 
-    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
-        self.calls.append({"method": method, "url": url, **kwargs})
-        return self.responses.pop(0)
+    def list(self, *, name: str, **kwargs: Any) -> List[FakeZone]:
+        self.calls.append({"name": name, **kwargs})
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
-class FailingSession:
-    def __init__(self, error: requests.RequestException) -> None:
-        self.error = error
-        self.calls: List[Dict[str, Any]] = []
+class FakeRecordsClient:
+    def __init__(
+        self,
+        *,
+        list_responses: List[Any] | None = None,
+        create_responses: List[Any] | None = None,
+        update_responses: List[Any] | None = None,
+        delete_responses: List[Any] | None = None,
+    ) -> None:
+        self.list_responses = list_responses or []
+        self.create_responses = create_responses or []
+        self.update_responses = update_responses or []
+        self.delete_responses = delete_responses or []
+        self.list_calls: List[Dict[str, Any]] = []
+        self.create_calls: List[Dict[str, Any]] = []
+        self.update_calls: List[Dict[str, Any]] = []
+        self.delete_calls: List[Dict[str, Any]] = []
 
-    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
-        self.calls.append({"method": method, "url": url, **kwargs})
-        raise self.error
+    def _next(self, responses: List[Any]) -> Any:
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def list(self, *, zone_id: str, name: str, type: str, **kwargs: Any) -> List[FakeRecord]:
+        self.list_calls.append(
+            {
+                "zone_id": zone_id,
+                "name": name,
+                "type": type,
+                **kwargs,
+            }
+        )
+        return self._next(self.list_responses)
+
+    def create(
+        self,
+        *,
+        zone_id: str,
+        name: str,
+        type: str,
+        content: str,
+        ttl: int,
+        proxied: bool,
+        **kwargs: Any,
+    ) -> FakeRecord | None:
+        self.create_calls.append(
+            {
+                "zone_id": zone_id,
+                "name": name,
+                "type": type,
+                "content": content,
+                "ttl": ttl,
+                "proxied": proxied,
+                **kwargs,
+            }
+        )
+        return self._next(self.create_responses)
+
+    def update(
+        self,
+        dns_record_id: str,
+        *,
+        zone_id: str,
+        name: str,
+        type: str,
+        content: str,
+        ttl: int,
+        proxied: bool,
+        **kwargs: Any,
+    ) -> FakeRecord | None:
+        self.update_calls.append(
+            {
+                "dns_record_id": dns_record_id,
+                "zone_id": zone_id,
+                "name": name,
+                "type": type,
+                "content": content,
+                "ttl": ttl,
+                "proxied": proxied,
+                **kwargs,
+            }
+        )
+        return self._next(self.update_responses)
+
+    def delete(self, dns_record_id: str, *, zone_id: str, **kwargs: Any) -> dict[str, Any]:
+        self.delete_calls.append(
+            {
+                "dns_record_id": dns_record_id,
+                "zone_id": zone_id,
+                **kwargs,
+            }
+        )
+        return self._next(self.delete_responses)
+
+
+class FakeCloudflareClient:
+    def __init__(
+        self,
+        *,
+        zone_responses: List[Any] | None = None,
+        record_list_responses: List[Any] | None = None,
+        create_responses: List[Any] | None = None,
+        update_responses: List[Any] | None = None,
+        delete_responses: List[Any] | None = None,
+    ) -> None:
+        self.zones = FakeZonesClient(zone_responses or [])
+        self.records = FakeRecordsClient(
+            list_responses=record_list_responses,
+            create_responses=create_responses,
+            update_responses=update_responses,
+            delete_responses=delete_responses,
+        )
+        self.dns = SimpleNamespace(records=self.records)
+
+
+def make_api_connection_error(message: str = "timed out") -> APIConnectionError:
+    request = httpx.Request("GET", "https://api.cloudflare.com/client/v4/test")
+    return APIConnectionError(message=message, request=request)
+
+
+def make_api_status_error(
+    status_code: int,
+    body: Dict[str, Any],
+    message: str = "Cloudflare API error",
+) -> APIStatusError:
+    request = httpx.Request("GET", "https://api.cloudflare.com/client/v4/test")
+    response = httpx.Response(status_code, json=body, request=request)
+    return APIStatusError(message, response=response, body=body)
 
 
 class StubProvider:
@@ -78,64 +200,70 @@ class StubProvider:
 
 
 class TestCloudflareProvider:
-    def test_request_wraps_requests_exception(self):
-        session = FailingSession(requests.Timeout("timed out"))
+    def test_request_wraps_connection_error(self):
+        client = FakeCloudflareClient(
+            record_list_responses=[make_api_connection_error("timed out")]
+        )
         provider = CloudflareProvider(
             api_token="token",
             zone_id="zone123",
             zone_name="example.com",
-            session=session,
+            client=client,
         )
 
         with pytest.raises(DNSProviderError, match="Cloudflare API request failed"):
             provider.get_cname("app")
 
-    def test_resolves_zone_id_from_zone_name(self):
-        session = FakeSession(
-            [
-                FakeResponse(
-                    200,
-                    {
-                        "success": True,
-                        "result": [{"id": "zone123", "name": "example.com"}],
-                    },
+    def test_request_wraps_status_error(self):
+        client = FakeCloudflareClient(
+            record_list_responses=[
+                make_api_status_error(
+                    403,
+                    {"errors": [{"message": "forbidden"}]},
                 )
             ]
+        )
+        provider = CloudflareProvider(
+            api_token="token",
+            zone_id="zone123",
+            zone_name="example.com",
+            client=client,
+        )
+
+        with pytest.raises(DNSProviderError, match="forbidden"):
+            provider.get_cname("app")
+
+    def test_resolves_zone_id_from_zone_name(self):
+        client = FakeCloudflareClient(
+            zone_responses=[[FakeZone(id="zone123", name="example.com")]]
         )
 
         provider = CloudflareProvider(
             api_token="token",
             zone_name="example.com",
-            session=session,
+            client=client,
         )
 
         assert provider.zone_id == "zone123"
-        assert session.calls[0]["method"] == "GET"
-        assert session.calls[0]["url"].endswith("/zones")
+        assert client.zones.calls[0]["name"] == "example.com"
 
     def test_resolve_zone_id_raises_when_zone_not_found(self):
-        session = FakeSession([FakeResponse(200, {"success": True, "result": []})])
+        client = FakeCloudflareClient(zone_responses=[[]])
 
         with pytest.raises(DNSProviderError, match="not found"):
             CloudflareProvider(
                 api_token="token",
                 zone_name="example.com",
-                session=session,
+                client=client,
             )
 
     def test_resolve_zone_id_raises_on_ambiguous_match(self):
-        session = FakeSession(
-            [
-                FakeResponse(
-                    200,
-                    {
-                        "success": True,
-                        "result": [
-                            {"id": "zone-1", "name": "example.com"},
-                            {"id": "zone-2", "name": "example.com"},
-                        ],
-                    },
-                )
+        client = FakeCloudflareClient(
+            zone_responses=[
+                [
+                    FakeZone(id="zone-1", name="example.com"),
+                    FakeZone(id="zone-2", name="example.com"),
+                ]
             ]
         )
 
@@ -143,167 +271,145 @@ class TestCloudflareProvider:
             CloudflareProvider(
                 api_token="token",
                 zone_name="example.com",
-                session=session,
+                client=client,
             )
 
     def test_get_cname_returns_record(self):
-        get_response = FakeResponse(
-            200,
-            {
-                "success": True,
-                "result": [
-                    {
-                        "id": "abc123",
-                        "name": "app.example.com",
-                        "content": "target.example.net",
-                        "ttl": 120,
-                    }
-                ],
-            },
+        client = FakeCloudflareClient(
+            record_list_responses=[
+                [
+                    FakeRecord(
+                        id="abc123",
+                        name="app.example.com",
+                        content="target.example.net",
+                        ttl=120,
+                    )
+                ]
+            ]
         )
-        session = FakeSession([get_response])
         provider = CloudflareProvider(
             api_token="token",
             zone_id="zone123",
             zone_name="example.com",
-            session=session,
+            client=client,
         )
 
         record = provider.get_cname("app")
 
         assert record is not None
         assert record.provider_record_id == "abc123"
-        assert session.calls[0]["method"] == "GET"
+        assert client.records.list_calls[0]["type"] == "CNAME"
 
     def test_create_cname_creates_record_when_missing(self):
-        get_response = FakeResponse(
-            200,
-            {"success": True, "result": []},
+        client = FakeCloudflareClient(
+            record_list_responses=[[]],
+            create_responses=[
+                FakeRecord(
+                    id="abc123",
+                    name="app.example.com",
+                    content="target.example.net",
+                    ttl=300,
+                )
+            ],
         )
-        create_response = FakeResponse(
-            200,
-            {
-                "success": True,
-                "result": {
-                    "id": "abc123",
-                    "name": "app.example.com",
-                    "content": "target.example.net",
-                    "ttl": 300,
-                },
-            },
-        )
-        session = FakeSession([get_response, create_response])
         provider = CloudflareProvider(
             api_token="token",
             zone_id="zone123",
             zone_name="example.com",
-            session=session,
+            client=client,
         )
 
         record = provider.create_cname("app", "target.example.net")
 
         assert record.name == "app.example.com"
         assert record.target == "target.example.net"
-        assert session.calls[0]["method"] == "GET"
-        assert session.calls[1]["method"] == "POST"
+        assert len(client.records.list_calls) == 1
+        assert len(client.records.create_calls) == 1
 
     def test_create_cname_reuses_existing_record(self):
-        get_response = FakeResponse(
-            200,
-            {
-                "success": True,
-                "result": [
-                    {
-                        "id": "abc123",
-                        "name": "app.example.com",
-                        "content": "target.example.net",
-                        "ttl": 450,
-                    }
-                ],
-            },
+        client = FakeCloudflareClient(
+            record_list_responses=[
+                [
+                    FakeRecord(
+                        id="abc123",
+                        name="app.example.com",
+                        content="target.example.net",
+                        ttl=450,
+                    )
+                ]
+            ]
         )
-        session = FakeSession([get_response])
         provider = CloudflareProvider(
             api_token="token",
             zone_id="zone123",
             zone_name="example.com",
-            session=session,
+            client=client,
         )
 
         record = provider.create_cname("app", "target.example.net")
 
         assert record.provider_record_id == "abc123"
-        assert len(session.calls) == 1
-        assert session.calls[0]["method"] == "GET"
+        assert len(client.records.list_calls) == 1
+        assert client.records.create_calls == []
 
     def test_delete_cname_removes_existing_record(self):
-        get_response = FakeResponse(
-            200,
-            {
-                "success": True,
-                "result": [
-                    {
-                        "id": "abc123",
-                        "name": "app.example.com",
-                        "content": "target.example.net",
-                        "ttl": 300,
-                    }
-                ],
-            },
+        client = FakeCloudflareClient(
+            record_list_responses=[
+                [
+                    FakeRecord(
+                        id="abc123",
+                        name="app.example.com",
+                        content="target.example.net",
+                        ttl=300,
+                    )
+                ]
+            ],
+            delete_responses=[{"id": "abc123"}],
         )
-        delete_response = FakeResponse(200, {"success": True, "result": {}})
-        session = FakeSession([get_response, delete_response])
         provider = CloudflareProvider(
             api_token="token",
             zone_id="zone123",
             zone_name="example.com",
-            session=session,
+            client=client,
         )
 
         assert provider.delete_cname("app") is True
-        assert session.calls[0]["method"] == "GET"
-        assert session.calls[1]["method"] == "DELETE"
+        assert len(client.records.list_calls) == 1
+        assert len(client.records.delete_calls) == 1
 
     def test_create_cname_updates_existing_record_with_new_target(self):
-        get_response = FakeResponse(
-            200,
-            {
-                "success": True,
-                "result": [
-                    {
-                        "id": "abc123",
-                        "name": "app.example.com",
-                        "content": "old.example.net",
-                        "ttl": 120,
-                    }
-                ],
-            },
+        client = FakeCloudflareClient(
+            record_list_responses=[
+                [
+                    FakeRecord(
+                        id="abc123",
+                        name="app.example.com",
+                        content="old.example.net",
+                        ttl=120,
+                    )
+                ]
+            ],
+            update_responses=[
+                FakeRecord(
+                    id="abc123",
+                    name="app.example.com",
+                    content="new.example.net",
+                    ttl=300,
+                )
+            ],
         )
-        update_response = FakeResponse(
-            200,
-            {
-                "success": True,
-                "result": {
-                    "id": "abc123",
-                    "name": "app.example.com",
-                    "content": "new.example.net",
-                    "ttl": 300,
-                },
-            },
-        )
-        session = FakeSession([get_response, update_response])
         provider = CloudflareProvider(
             api_token="token",
             zone_id="zone123",
             zone_name="example.com",
-            session=session,
+            client=client,
         )
 
         record = provider.create_cname("app", "new.example.net")
 
         assert record.target == "new.example.net"
-        assert session.calls[0]["method"] == "GET"
-        assert session.calls[1]["method"] == "PUT"
+        assert len(client.records.list_calls) == 1
+        assert len(client.records.update_calls) == 1
 
 
 class TestRoute53Provider:
@@ -490,22 +596,14 @@ class TestDNSManagerFromSSM:
             Value="token",
             Type="SecureString",
         )
-        fake_session = FakeSession(
-            [
-                FakeResponse(
-                    200,
-                    {
-                        "success": True,
-                        "result": [{"id": "zone-123", "name": "example.com"}],
-                    },
-                )
-            ]
+        fake_client = FakeCloudflareClient(
+            zone_responses=[[FakeZone(id="zone-123", name="example.com")]]
         )
 
         manager = DNSManager.from_ssm(
             param_prefix="/devbox",
             ssm_client=ssm,
-            http_session=fake_session,
+            cloudflare_client=fake_client,
         )
 
         assert isinstance(manager.provider, CloudflareProvider)
@@ -541,12 +639,12 @@ class TestDNSManagerFromSSM:
             Value="token",
             Type="SecureString",
         )
-        fake_session = FakeSession([FakeResponse(200, {"success": True, "result": []})])
+        fake_client = FakeCloudflareClient(zone_responses=[[]])
 
         manager = DNSManager.from_ssm(
             param_prefix="/devbox",
             ssm_client=ssm,
-            http_session=fake_session,
+            cloudflare_client=fake_client,
         )
 
         assert manager.provider is None
