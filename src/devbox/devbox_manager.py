@@ -285,6 +285,12 @@ class DevBoxManager:
 
         Returns:
             Dict with AMI cleanup details
+
+        Raises:
+            ValueError: If no AMI ID is provided
+            utils.ResourceNotFoundError: If the AMI does not exist
+            utils.DevBoxError: If the AMI is deregistered but snapshot cleanup fails
+            utils.AWSClientError: If an AWS API call fails while looking up or deleting the AMI
         """
         if not ami_id:
             raise ValueError("No AMI ID provided.")
