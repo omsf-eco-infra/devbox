@@ -23,7 +23,17 @@ output "dynamodb_table_name" {
   value       = aws_dynamodb_table.main.name
 }
 
+output "dynamodb_table_arn" {
+  description = "ARN of the DynamoDB table used for snapshots"
+  value       = aws_dynamodb_table.main.arn
+}
+
 output "dynamodb_metadata_name" {
   description = "Name of the DynamoDB table used for metadata"
   value       = aws_dynamodb_table.meta.name
+}
+
+output "image_uri" {
+  description = "Digest-pinned image URI shared by Lambda modules"
+  value       = local.image_uri
 }

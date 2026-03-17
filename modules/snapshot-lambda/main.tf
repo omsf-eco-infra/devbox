@@ -57,10 +57,22 @@ locals {
   # Build from repo root so lambdas/Dockerfile can COPY pyproject.toml and src/.
   repo_root         = abspath("${path.module}/../..")
   lambda_dockerfile = "${local.repo_root}/lambdas/Dockerfile"
+  lambda_source_files = concat(
+    ["README.md", "pyproject.toml", "lambdas/Dockerfile"],
+    tolist(fileset(local.repo_root, "src/**")),
+    tolist(fileset(local.repo_root, "lambdas/*.py")),
+  )
+  lambda_source_hash = sha256(join("", [
+    for relpath in sort(local.lambda_source_files) : filesha256("${local.repo_root}/${relpath}")
+  ]))
 }
 
 
 resource "null_resource" "build_and_push" {
+  triggers = {
+    source_hash = local.lambda_source_hash
+  }
+
   provisioner "local-exec" {
     command = <<EOT
 aws ecr get-login-password --region ${data.aws_region.current.name} \

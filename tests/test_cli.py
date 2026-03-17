@@ -287,6 +287,8 @@ class TestLaunchCommand:
         assert "PROJECT" in result.output  # Now a positional argument
         assert "--instance-type" in result.output
         assert "--key-pair" in result.output
+        assert "--no-assign-dns" in result.output
+        assert "--dns-subdomain" in result.output
 
     @patch("devbox.launch.launch_programmatic")
     @patch("devbox.cli.ConsoleOutput")
@@ -314,6 +316,8 @@ class TestLaunchCommand:
             volume_size=0,  # default
             base_ami=None,
             param_prefix="/devbox",  # default
+            assign_dns=True,
+            dns_subdomain=None,
         )
 
     @patch("devbox.launch.launch_programmatic")
@@ -348,6 +352,8 @@ class TestLaunchCommand:
             volume_size=200,
             base_ami="ami-12345678",
             param_prefix="/custom",
+            assign_dns=True,
+            dns_subdomain=None,
         )
 
     @patch("devbox.launch.launch_programmatic")
@@ -402,6 +408,8 @@ class TestLaunchCommand:
             volume_size=0,
             base_ami=None,
             param_prefix="/devbox",
+            assign_dns=True,
+            dns_subdomain=None,
         )
 
     @patch("devbox.launch.launch_programmatic")
@@ -423,6 +431,8 @@ class TestLaunchCommand:
             volume_size=0,
             base_ami=None,
             param_prefix="/devbox",
+            assign_dns=True,
+            dns_subdomain=None,
         )
 
     @patch("devbox.launch.launch_programmatic")
@@ -444,6 +454,37 @@ class TestLaunchCommand:
             volume_size=0,
             base_ami=None,
             param_prefix="/devbox",
+            assign_dns=True,
+            dns_subdomain=None,
+        )
+
+    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.ConsoleOutput")
+    def test_launch_with_dns_flags(self, mock_console_class, mock_launch):
+        mock_console = MagicMock()
+        mock_console_class.return_value = mock_console
+
+        result = self.runner.invoke(
+            cli,
+            [
+                "launch",
+                "test-project",
+                "--no-assign-dns",
+                "--dns-subdomain",
+                "my-custom-label",
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_launch.assert_called_once_with(
+            project="test-project",
+            instance_type=None,
+            key_pair=None,
+            volume_size=0,
+            base_ami=None,
+            param_prefix="/devbox",
+            assign_dns=False,
+            dns_subdomain="my-custom-label",
         )
 
     @pytest.mark.parametrize(
@@ -828,6 +869,8 @@ class TestIntegrationScenarios:
             volume_size=150,
             base_ami="ami-0abcdef1234567890",
             param_prefix="/mycompany/devbox",
+            assign_dns=True,
+            dns_subdomain=None,
         )
 
 
@@ -1061,4 +1104,6 @@ class TestParamPrefixEnvironmentOverrides:
             volume_size=0,
             base_ami=None,
             param_prefix="/env/devbox",
+            assign_dns=True,
+            dns_subdomain=None,
         )
