@@ -11,13 +11,12 @@ from botocore.exceptions import ClientError
 
 # Import local modules
 from . import utils
+from .dns import DNSManager
 from .utils import (
     get_ssm_client,
     get_ec2_client,
     get_ec2_resource,
     get_dynamodb_resource,
-    get_dynamodb_table,
-    get_ssm_parameter,
     determine_ssh_username,
     ResourceNotFoundError,
     AWSClientError,
@@ -97,7 +96,20 @@ def make_parser() -> argparse.ArgumentParser:
         help="Minimum size (GiB) for the root EBS volume",
     )
     parser.add_argument(
+        "--no-assign-dns",
+        action="store_false",
+        dest="assign_dns",
+        default=True,
+        help="Do not assign a DNS CNAME for the instance (DNS is assigned by default when configured)",
+    )
+    parser.add_argument(
+        "--dns-subdomain",
+        default=None,
+        help="Custom subdomain to use instead of the project name",
+    )
+    parser.add_argument(
         "--userdata-file",
+        default=None,
         help="Path to userdata script file (cloud-init format)",
     )
 
@@ -394,6 +406,7 @@ def update_instance_status(
     instance_type: str,
     key_pair: str,
     instance_info: Optional[Dict[str, Any]] = None,
+    cname_domain: Optional[str] = None,
 ) -> None:
     """Update the instance status in DynamoDB.
 
@@ -406,14 +419,17 @@ def update_instance_status(
         instance_type: EC2 instance type used for the instance
         key_pair: Name of the EC2 Key Pair used for SSH access
         instance_info: Optional instance metadata
+        cname_domain: Optional DNS subdomain label (not FQDN suffix) to persist as
+            CNAMEDomain in the project record
 
     Raises:
         ValueError: If the status is unexpected
         ClientError: If there's an error updating DynamoDB
     """
     try:
-        if status == "nonexistent" and instance_info:
+        if status == "nonexistent":
             # Create a new item for this project
+            instance_info = instance_info or {}
             item = {
                 "project": project,
                 "Status": "RUNNING",
@@ -431,6 +447,8 @@ def update_instance_status(
                 "State": "running",
                 "Username": "",  # Will be determined later when we have AMI info
             }
+            if cname_domain is not None:
+                item["CNAMEDomain"] = cname_domain
 
             # Add any additional instance info that might be useful
             if "State" in instance_info:
@@ -459,11 +477,13 @@ def update_instance_status(
                     "LastKeyPair": key_pair,
                     "LastUpdated": str(utils.get_utc_now()),
                     "State": "launching",
-                    "Username": existing_item.get(
-                        "Username", ""
-                    ),  # Preserve existing username
+                    "Username": existing_item.get("Username", ""),  # Preserve existing username
                 }
             )
+            if cname_domain is not None:
+                item["CNAMEDomain"] = cname_domain
+            elif "CNAMEDomain" in existing_item:
+                item["CNAMEDomain"] = existing_item["CNAMEDomain"]
 
             # Add any additional instance info that might be useful
             if instance_info:
@@ -524,6 +544,9 @@ def update_instance_status(
                 if "PublicIpAddress" in instance_info:
                     update_expr += ", PublicIp = :public_ip"
                     expr_attr_values[":public_ip"] = instance_info["PublicIpAddress"]
+            if cname_domain is not None:
+                update_expr += ", CNAMEDomain = :cname_domain"
+                expr_attr_values[":cname_domain"] = cname_domain
 
             table.update_item(
                 Key={"project": project},
@@ -886,6 +909,8 @@ def launch_programmatic(
     base_ami: Optional[str] = None,
     param_prefix: str = "/devbox",
     userdata_file: Optional[str] = None,
+    assign_dns: bool = True,
+    dns_subdomain: Optional[str] = None,
 ) -> None:
     """Launch a devbox instance programmatically.
 
@@ -897,6 +922,8 @@ def launch_programmatic(
         base_ami: Base AMI ID (only required for new projects)
         param_prefix: Prefix for AWS Systems Manager Parameter Store keys
         userdata_file: Optional path to userdata script file (cloud-init format)
+        assign_dns: Whether to assign a DNS CNAME for the instance
+        dns_subdomain: Optional custom subdomain to override the project name
     """
     try:
         # Validate project name
@@ -974,6 +1001,52 @@ def launch_programmatic(
         instance.wait_until_running()
         instance.reload()  # Refresh instance attributes
 
+        # Assign DNS if configured and requested
+        cname_domain = config["item"].get("CNAMEDomain")
+        if assign_dns:
+            try:
+                if not instance.public_dns_name:
+                    print("Instance does not have a public DNS name; skipping DNS assignment")
+                else:
+                    dns_manager = DNSManager.from_ssm(
+                        param_prefix=param_prefix,
+                        ssm_client=aws["ssm"],
+                    )
+                    if dns_manager.provider is None:
+                        print("DNS not configured; skipping CNAME assignment")
+                    else:
+                        preferred_subdomain = dns_subdomain
+                        if dns_subdomain is None and cname_domain:
+                            preferred_subdomain = dns_manager.normalize_subdomain(cname_domain)
+                            if preferred_subdomain is None:
+                                print(
+                                    f"Stored DNS value '{cname_domain}' is not a valid subdomain label; "
+                                    "falling back to project-derived subdomain"
+                                )
+
+                        if preferred_subdomain is None:
+                            resolved_subdomain = dns_manager.sanitize_dns_name(project)
+                        else:
+                            resolved_subdomain = dns_manager.sanitize_dns_name(preferred_subdomain)
+
+                        ensured_domain = dns_manager.assign_cname(
+                            subdomain=resolved_subdomain,
+                            instance_public_dns=instance.public_dns_name,
+                        )
+                        if ensured_domain:
+                            # Persist only the subdomain preference (not the FQDN suffix).
+                            cname_domain = resolved_subdomain
+                            print(f"Ensured DNS CNAME: {ensured_domain}")
+                        else:
+                            print("DNS assignment skipped (provider not available)")
+            except Exception as e:
+                print(f"Warning: DNS assignment failed: {e}")
+        else:
+            if cname_domain:
+                print("DNS assignment disabled; existing DNS entry preserved")
+            else:
+                print("DNS assignment disabled; no DNS record created")
+
         # Determine and update SSH username if not already set
         try:
             resp = config["table"].get_item(Key={"project": project})
@@ -1009,6 +1082,7 @@ def launch_programmatic(
             instance_type=instance_type,
             key_pair=key_pair,
             instance_info=instance_info,
+            cname_domain=cname_domain,
         )
 
         # Display instance information
@@ -1049,6 +1123,8 @@ def main() -> None:
             base_ami=args.base_ami,
             param_prefix=args.param_prefix,
             userdata_file=args.userdata_file,
+            assign_dns=args.assign_dns,
+            dns_subdomain=args.dns_subdomain,
         )
 
     except KeyboardInterrupt:

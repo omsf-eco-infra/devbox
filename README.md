@@ -65,6 +65,22 @@ flowchart LR
   class H readyPhase;
 ```
 
+### Lambda Image Build Notes
+
+The Lambda image is built with `lambdas/Dockerfile`, but the Docker build
+context must be the repository root (`.`). This is required because the image
+installs the package via `pip install .` and copies `pyproject.toml` and
+`src/` from the root.
+
+Manual equivalent:
+
+```bash
+docker build --platform linux/amd64 \
+  -f lambdas/Dockerfile \
+  -t snapshot-lambda \
+  .
+```
+
 
 
 
@@ -155,3 +171,9 @@ devbox launch my-project \
 Sometimes you'll get this error if you try to SSH into a DevBox immediately
 after it starts running. This is because sometimes the networking is not fully
 set up yet. Wait a few seconds and try again.
+
+### ssh: Could not resolve hostname `<project.example.com>` nodename nor servname provided, or not known
+
+This probably means that the DNS cache on your local machine has not updated yet with the new IP address for the DevBox (and should only happen if you are using DevBox with a DNS provider configured).
+
+On macOS, you can flush the DNS cache with `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`. On Ubuntu-based systems you can use `sudo resolvectl flush-caches`.

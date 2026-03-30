@@ -10,6 +10,31 @@ from typing import Optional
 from .devbox_manager import DevBoxManager
 from .console_output import ConsoleOutput
 
+DEFAULT_PARAM_PREFIX = "/devbox"
+PARAM_PREFIX_ENV_VAR = "DEVBOX_PARAM_PREFIX"
+
+
+def param_prefix_option(func):
+    """Add shared --param-prefix option with env var support."""
+    return click.option(
+        "--param-prefix",
+        default=DEFAULT_PARAM_PREFIX,
+        envvar=PARAM_PREFIX_ENV_VAR,
+        show_default=True,
+        show_envvar=True,
+        help="SSM parameter prefix",
+    )(func)
+
+
+def get_manager(console: ConsoleOutput, param_prefix: str) -> DevBoxManager:
+    """Create a DevBoxManager using the requested parameter prefix."""
+    manager_prefix = param_prefix.strip("/") or "devbox"
+    try:
+        return DevBoxManager(prefix=manager_prefix)
+    except Exception as e:
+        console.print_error(f"Failed to initialize AWS clients: {str(e)}")
+        sys.exit(1)
+
 
 @click.group()
 @click.version_option()
@@ -19,24 +44,23 @@ def cli(ctx):
     ctx.ensure_object(dict)
     ctx.obj["console"] = ConsoleOutput()
 
-    try:
-        ctx.obj["manager"] = DevBoxManager()
-    except Exception as e:
-        ctx.obj["console"].print_error(f"Failed to initialize AWS clients: {str(e)}")
-        sys.exit(1)
-
 
 @cli.command()
 @click.argument("project", required=False)
+@param_prefix_option
 @click.pass_context
-def status(ctx, project: Optional[str] = None):
+def status(
+    ctx,
+    project: Optional[str] = None,
+    param_prefix: str = DEFAULT_PARAM_PREFIX,
+):
     """Show status of DevBox resources.
 
     If PROJECT is provided, only show resources for that project.
     Otherwise, show all resources.
     """
     console = ctx.obj["console"]
-    manager = ctx.obj["manager"]
+    manager = get_manager(console, param_prefix)
 
     try:
         # List instances, volumes, and snapshots
@@ -56,19 +80,18 @@ def status(ctx, project: Optional[str] = None):
 
 @cli.command()
 @click.argument("instance_id")
+@param_prefix_option
 @click.pass_context
-def terminate(ctx, instance_id: str):
+def terminate(ctx, instance_id: str, param_prefix: str):
     """Terminate a DevBox instance by its ID."""
     console = ctx.obj["console"]
-    manager = ctx.obj["manager"]
+    manager = get_manager(console, param_prefix)
 
     try:
-        success, message = manager.terminate_instance(instance_id, console)
-        if success:
-            console.print_success(message)
-        else:
-            console.print_error(message)
-            sys.exit(1)
+        result = manager.terminate_instance(instance_id, console)
+        console.print_success(
+            f"Terminating instance {result['instance_id']} (project: {result['project']})."
+        )
     except Exception as e:
         console.print_error(f"Failed to terminate instance: {str(e)}")
         sys.exit(1)
@@ -85,7 +108,17 @@ def terminate(ctx, instance_id: str):
 )
 @click.option("--volume-size", type=int, default=0, help="Root volume size in GB")
 @click.option("--base-ami", help="Base AMI ID for new instances")
-@click.option("--param-prefix", default="/devbox", help="SSM parameter prefix")
+@click.option(
+    "--no-assign-dns",
+    is_flag=True,
+    default=False,
+    help="Do not assign a DNS CNAME for the instance (DNS is assigned by default when configured)",
+)
+@click.option(
+    "--dns-subdomain",
+    help="Custom subdomain to use instead of the project name",
+)
+@param_prefix_option
 @click.option(
     "--userdata-file",
     type=click.Path(exists=True),
@@ -99,6 +132,8 @@ def launch(
     key_pair: Optional[str],
     volume_size: int,
     base_ami: Optional[str],
+    no_assign_dns: bool,
+    dns_subdomain: Optional[str],
     param_prefix: str,
     userdata_file: Optional[str],
 ):
@@ -120,6 +155,8 @@ def launch(
             base_ami=base_ami,
             param_prefix=param_prefix,
             userdata_file=userdata_file,
+            assign_dns=not no_assign_dns,
+            dns_subdomain=dns_subdomain,
         )
     except Exception as e:
         console.print_error(f"Failed to launch instance: {str(e)}")
@@ -129,7 +166,7 @@ def launch(
 @cli.command()
 @click.argument("project")
 @click.option("--base-ami", required=True, help="Base AMI ID for the project")
-@click.option("--param-prefix", default="/devbox", help="SSM parameter prefix")
+@param_prefix_option
 @click.pass_context
 def new(ctx, project: str, base_ami: str, param_prefix: str):
     """Create a new DevBox project without launching an instance.
@@ -146,6 +183,56 @@ def new(ctx, project: str, base_ami: str, param_prefix: str):
         )
     except Exception as e:
         console.print_error(f"Failed to create project: {str(e)}")
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("project")
+@click.option("--force", is_flag=True, help="Skip confirmation prompts")
+@param_prefix_option
+@click.pass_context
+def delete_project(ctx, project: str, force: bool, param_prefix: str):
+    """Delete a DevBox project and its AMI/snapshots."""
+    console = ctx.obj["console"]
+    manager = get_manager(console, param_prefix)
+
+    try:
+        item = manager.get_project_item(project)
+        if not item:
+            console.print_error(f"Project '{project}' not found in the main table.")
+            sys.exit(1)
+
+        in_use, reason = manager.project_in_use(project, item)
+        if in_use:
+            console.print_error(f"Project '{project}' is currently in use: {reason}")
+            sys.exit(1)
+
+        if not force:
+            if not click.confirm(f"Delete project '{project}' from the main table?"):
+                console.print_warning("Project deletion cancelled.")
+                return
+
+        ami_id = item.get("AMI")
+        if ami_id:
+            if not force and not click.confirm(
+                f"Also delete AMI {ami_id} and its backing snapshot(s)?"
+            ):
+                console.print_warning(
+                    "AMI cleanup cancelled. Continuing with project entry deletion only."
+                )
+            else:
+                result = manager.delete_ami_and_snapshots(ami_id)
+                console.print_success(
+                    f"Deregistered AMI {result['ami_id']} and deleted {result['snapshot_count']} snapshot(s)."
+                )
+        else:
+            console.print_warning(f"No AMI recorded for project '{project}'.")
+
+        manager.delete_project_entry(project)
+        console.print_success(f"Deleted project '{project}' from the main table.")
+
+    except Exception as e:
+        console.print_error(f"Failed to delete project: {str(e)}")
         sys.exit(1)
 
 
