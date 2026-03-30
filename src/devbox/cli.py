@@ -2,6 +2,7 @@
 
 This module provides the Click-based CLI for managing DevBox instances.
 """
+
 import sys
 import click
 from typing import Optional
@@ -9,25 +10,25 @@ from typing import Optional
 from .devbox_manager import DevBoxManager
 from .console_output import ConsoleOutput
 
-DEFAULT_PARAM_PREFIX = '/devbox'
-PARAM_PREFIX_ENV_VAR = 'DEVBOX_PARAM_PREFIX'
+DEFAULT_PARAM_PREFIX = "/devbox"
+PARAM_PREFIX_ENV_VAR = "DEVBOX_PARAM_PREFIX"
 
 
 def param_prefix_option(func):
     """Add shared --param-prefix option with env var support."""
     return click.option(
-        '--param-prefix',
+        "--param-prefix",
         default=DEFAULT_PARAM_PREFIX,
         envvar=PARAM_PREFIX_ENV_VAR,
         show_default=True,
         show_envvar=True,
-        help='SSM parameter prefix'
+        help="SSM parameter prefix",
     )(func)
 
 
 def get_manager(console: ConsoleOutput, param_prefix: str) -> DevBoxManager:
     """Create a DevBoxManager using the requested parameter prefix."""
-    manager_prefix = param_prefix.strip('/') or 'devbox'
+    manager_prefix = param_prefix.strip("/") or "devbox"
     try:
         return DevBoxManager(prefix=manager_prefix)
     except Exception as e:
@@ -41,23 +42,24 @@ def get_manager(console: ConsoleOutput, param_prefix: str) -> DevBoxManager:
 def cli(ctx):
     """DevBox - AWS EC2 Development Environment Manager."""
     ctx.ensure_object(dict)
-    ctx.obj['console'] = ConsoleOutput()
+    ctx.obj["console"] = ConsoleOutput()
+
 
 @cli.command()
-@click.argument('project', required=False)
+@click.argument("project", required=False)
 @param_prefix_option
 @click.pass_context
 def status(
     ctx,
     project: Optional[str] = None,
-    param_prefix: str = DEFAULT_PARAM_PREFIX
+    param_prefix: str = DEFAULT_PARAM_PREFIX,
 ):
     """Show status of DevBox resources.
 
     If PROJECT is provided, only show resources for that project.
     Otherwise, show all resources.
     """
-    console = ctx.obj['console']
+    console = ctx.obj["console"]
     manager = get_manager(console, param_prefix)
 
     try:
@@ -75,13 +77,14 @@ def status(
         console.print_error(f"Failed to retrieve status: {str(e)}")
         sys.exit(1)
 
+
 @cli.command()
-@click.argument('instance_id')
+@click.argument("instance_id")
 @param_prefix_option
 @click.pass_context
 def terminate(ctx, instance_id: str, param_prefix: str):
     """Terminate a DevBox instance by its ID."""
-    console = ctx.obj['console']
+    console = ctx.obj["console"]
     manager = get_manager(console, param_prefix)
 
     try:
@@ -93,34 +96,55 @@ def terminate(ctx, instance_id: str, param_prefix: str):
         console.print_error(f"Failed to terminate instance: {str(e)}")
         sys.exit(1)
 
+
 @cli.command()
-@click.argument('project')
-@click.option('--instance-type', help='EC2 instance type (uses last instance type if not specified)')
-@click.option('--key-pair', help='SSH key pair name (uses last keypair if not specified)')
-@click.option('--volume-size', type=int, default=0, help='Root volume size in GB')
-@click.option('--base-ami', help='Base AMI ID for new instances')
+@click.argument("project")
 @click.option(
-    '--no-assign-dns',
+    "--instance-type",
+    help="EC2 instance type (uses last instance type if not specified)",
+)
+@click.option(
+    "--key-pair", help="SSH key pair name (uses last keypair if not specified)"
+)
+@click.option("--volume-size", type=int, default=0, help="Root volume size in GB")
+@click.option("--base-ami", help="Base AMI ID for new instances")
+@click.option(
+    "--no-assign-dns",
     is_flag=True,
     default=False,
-    help='Do not assign a DNS CNAME for the instance (DNS is assigned by default when configured)',
+    help="Do not assign a DNS CNAME for the instance (DNS is assigned by default when configured)",
 )
 @click.option(
-    '--dns-subdomain',
-    help='Custom subdomain to use instead of the project name',
+    "--dns-subdomain",
+    help="Custom subdomain to use instead of the project name",
 )
 @param_prefix_option
+@click.option(
+    "--userdata-file",
+    type=click.Path(exists=True),
+    help="Path to userdata script file (cloud-init format)",
+)
 @click.pass_context
-def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[str],
-          volume_size: int, base_ami: Optional[str], no_assign_dns: bool,
-          dns_subdomain: Optional[str], param_prefix: str):
+def launch(
+    ctx,
+    project: str,
+    instance_type: Optional[str],
+    key_pair: Optional[str],
+    volume_size: int,
+    base_ami: Optional[str],
+    no_assign_dns: bool,
+    dns_subdomain: Optional[str],
+    param_prefix: str,
+    userdata_file: Optional[str],
+):
     """Launch a new DevBox instance.
 
     PROJECT is the name of the project to launch.
+    Optionally pass cloud-init user data with --userdata-file.
     """
     from .launch import launch_programmatic
 
-    console = ctx.obj['console']
+    console = ctx.obj["console"]
 
     try:
         launch_programmatic(
@@ -130,6 +154,7 @@ def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[s
             volume_size=volume_size,
             base_ami=base_ami,
             param_prefix=param_prefix,
+            userdata_file=userdata_file,
             assign_dns=not no_assign_dns,
             dns_subdomain=dns_subdomain,
         )
@@ -137,9 +162,10 @@ def launch(ctx, project: str, instance_type: Optional[str], key_pair: Optional[s
         console.print_error(f"Failed to launch instance: {str(e)}")
         sys.exit(1)
 
+
 @cli.command()
-@click.argument('project')
-@click.option('--base-ami', required=True, help='Base AMI ID for the project')
+@click.argument("project")
+@click.option("--base-ami", required=True, help="Base AMI ID for the project")
 @param_prefix_option
 @click.pass_context
 def new(ctx, project: str, base_ami: str, param_prefix: str):
@@ -149,26 +175,25 @@ def new(ctx, project: str, base_ami: str, param_prefix: str):
     """
     from .new import new_project_programmatic
 
-    console = ctx.obj['console']
+    console = ctx.obj["console"]
 
     try:
         new_project_programmatic(
-            project=project,
-            base_ami=base_ami,
-            param_prefix=param_prefix
+            project=project, base_ami=base_ami, param_prefix=param_prefix
         )
     except Exception as e:
         console.print_error(f"Failed to create project: {str(e)}")
         sys.exit(1)
 
+
 @cli.command()
-@click.argument('project')
-@click.option('--force', is_flag=True, help='Skip confirmation prompts')
+@click.argument("project")
+@click.option("--force", is_flag=True, help="Skip confirmation prompts")
 @param_prefix_option
 @click.pass_context
 def delete_project(ctx, project: str, force: bool, param_prefix: str):
     """Delete a DevBox project and its AMI/snapshots."""
-    console = ctx.obj['console']
+    console = ctx.obj["console"]
     manager = get_manager(console, param_prefix)
 
     try:
@@ -210,9 +235,11 @@ def delete_project(ctx, project: str, force: bool, param_prefix: str):
         console.print_error(f"Failed to delete project: {str(e)}")
         sys.exit(1)
 
+
 def main():
     """Entry point for the CLI."""
     cli(obj={})
+
 
 if __name__ == "__main__":
     main()
