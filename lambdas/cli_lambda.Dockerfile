@@ -1,6 +1,6 @@
-FROM public.ecr.aws/docker/library/python:3.13-slim
+FROM python:3.13-slim
 
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1 \
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 \
   /lambda-adapter /opt/extensions/lambda-adapter
 
 ENV PYTHONUNBUFFERED=1

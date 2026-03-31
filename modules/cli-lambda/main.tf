@@ -40,7 +40,14 @@ resource "null_resource" "build_and_push" {
   }
 
   provisioner "local-exec" {
-    command = <<EOT
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<EOT
+set -euo pipefail
+export DOCKER_CONFIG="$(mktemp -d)"
+trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+
+aws ecr-public get-login-password --region us-east-1 \
+  | docker login --username AWS --password-stdin public.ecr.aws
 aws ecr get-login-password --region ${data.aws_region.current.name} \
   | docker login --username AWS --password-stdin ${aws_ecr_repository.cli.repository_url}
 docker build --platform linux/amd64 -f ${local.lambda_dockerfile} -t cli-lambda ${local.repo_root}
@@ -119,9 +126,9 @@ resource "aws_lambda_function" "cli" {
 
   environment {
     variables = {
-      AWS_LWA_INVOKE_MODE           = "response_stream"
-      AWS_LWA_READINESS_CHECK_PATH  = "/healthz"
-      PORT                          = "8080"
+      AWS_LWA_INVOKE_MODE          = "response_stream"
+      AWS_LWA_READINESS_CHECK_PATH = "/healthz"
+      PORT                         = "8080"
     }
   }
 
