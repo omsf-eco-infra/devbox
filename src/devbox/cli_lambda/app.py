@@ -9,6 +9,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse, StreamingResponse
 from starlette.routing import Route
 
+from ..commands.status import handle_status_action
 from ..cli_protocol import CliAction, CliEventType
 from .contracts import (
     CliRequestEnvelope,
@@ -18,7 +19,6 @@ from .contracts import (
     encode_event,
     parse_request_envelope,
 )
-from .status import handle_status_action
 
 ActionHandler = Callable[[CliRequestEnvelope], list[dict[str, Any]]]
 

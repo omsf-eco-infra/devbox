@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
 from unittest.mock import MagicMock, patch
 
@@ -12,9 +11,9 @@ import responses
 from devbox.remote_client import (
     NDJSON_MIME_TYPE,
     RemoteInvocationError,
-    fetch_remote_status,
     get_cli_function_url,
     get_function_url_region,
+    invoke_action,
 )
 
 
@@ -41,17 +40,17 @@ def test_get_function_url_region_rejects_invalid_host():
         get_function_url_region("https://example.com/not-a-lambda-url")
 
 
-def test_fetch_remote_status_surfaces_missing_ssm_parameter():
+def test_invoke_action_surfaces_missing_ssm_parameter():
     with patch(
         "devbox.remote_client.utils.get_ssm_parameter",
         side_effect=ValueError("missing parameter"),
     ):
         with pytest.raises(RemoteInvocationError, match="Failed to resolve CLI function URL"):
-            fetch_remote_status(None, "/devbox", console=MagicMock())
+            invoke_action("demo-action", {}, "/devbox", console=MagicMock())
 
 
 @responses.activate
-def test_fetch_remote_status_rehydrates_timestamps():
+def test_invoke_action_dispatches_signed_request():
     def request_callback(request):
         assert request.headers["Accept"] == NDJSON_MIME_TYPE
         assert request.headers["Content-Type"] == "application/json"
@@ -61,20 +60,14 @@ def test_fetch_remote_status_rehydrates_timestamps():
         if isinstance(body, bytes):
             body = body.decode("utf-8")
         payload = json.loads(body)
-        assert payload["action"] == "status"
+        assert payload["action"] == "demo-action"
         assert payload["param_prefix"] == "/devbox"
         assert payload["payload"] == {"project": "demo"}
 
         stream = (
-            '{"type":"result","action":"status","message":"ready","data":'
-            '{"instances":[{"InstanceId":"i-123","Project":"demo",'
-            '"LaunchTime":"2026-03-30T20:30:00+00:00"}],'
-            '"volumes":[{"VolumeId":"vol-123","Project":"demo","State":"in-use",'
-            '"Size":100,"AvailabilityZone":"us-east-1a","IsOrphaned":false}],'
-            '"snapshots":[{"SnapshotId":"snap-123","Project":"demo",'
-            '"Progress":"100%","VolumeSize":100,'
-            '"StartTime":"2026-03-30T18:00:00+00:00","IsOrphaned":false}]}}\n'
-            '{"type":"success","action":"status","message":"done","data":{}}\n'
+            '{"type":"result","action":"demo-action","message":"ready","data":'
+            '{"ok":true}}\n'
+            '{"type":"success","action":"demo-action","message":"done","data":{}}\n'
         )
         return (200, {"Content-Type": NDJSON_MIME_TYPE}, stream)
 
@@ -89,20 +82,23 @@ def test_fetch_remote_status_rehydrates_timestamps():
         "devbox.remote_client.utils.get_ssm_parameter",
         return_value=FUNCTION_URL,
     ):
-        result = fetch_remote_status("demo", "/devbox", console=MagicMock())
+        result = invoke_action(
+            action="demo-action",
+            payload={"project": "demo"},
+            param_prefix="/devbox",
+            console=MagicMock(),
+        )
 
-    assert isinstance(result["instances"][0]["LaunchTime"], datetime)
-    assert isinstance(result["snapshots"][0]["StartTime"], datetime)
+    assert result == {"ok": True}
 
 
 @responses.activate
-def test_fetch_remote_status_surfaces_warning_events():
+def test_invoke_action_surfaces_warning_events():
     console = MagicMock()
     stream = (
-        '{"type":"warning","action":"status","message":"heads-up","data":{}}\n'
-        '{"type":"result","action":"status","message":"ready",'
-        '"data":{"instances":[],"volumes":[],"snapshots":[]}}\n'
-        '{"type":"success","action":"status","message":"done","data":{}}\n'
+        '{"type":"warning","action":"demo-action","message":"heads-up","data":{}}\n'
+        '{"type":"result","action":"demo-action","message":"ready","data":{"ok":true}}\n'
+        '{"type":"success","action":"demo-action","message":"done","data":{}}\n'
     )
     responses.add(
         responses.POST,
@@ -116,14 +112,14 @@ def test_fetch_remote_status_surfaces_warning_events():
         "devbox.remote_client.utils.get_ssm_parameter",
         return_value=FUNCTION_URL,
     ):
-        result = fetch_remote_status(None, "/devbox", console=console)
+        result = invoke_action("demo-action", {}, "/devbox", console=console)
 
-    assert result == {"instances": [], "volumes": [], "snapshots": []}
+    assert result == {"ok": True}
     console.print_warning.assert_called_once_with("heads-up")
 
 
 @responses.activate
-def test_fetch_remote_status_rejects_malformed_ndjson():
+def test_invoke_action_rejects_malformed_ndjson():
     responses.add(
         responses.POST,
         FUNCTION_URL,
@@ -137,11 +133,11 @@ def test_fetch_remote_status_rejects_malformed_ndjson():
         return_value=FUNCTION_URL,
     ):
         with pytest.raises(RemoteInvocationError, match="Malformed NDJSON event"):
-            fetch_remote_status(None, "/devbox", console=MagicMock())
+            invoke_action("demo-action", {}, "/devbox", console=MagicMock())
 
 
 @responses.activate
-def test_fetch_remote_status_rejects_http_errors():
+def test_invoke_action_rejects_http_errors():
     responses.add(
         responses.POST,
         FUNCTION_URL,
@@ -154,17 +150,16 @@ def test_fetch_remote_status_rejects_http_errors():
         return_value=FUNCTION_URL,
     ):
         with pytest.raises(RemoteInvocationError, match="HTTP 403"):
-            fetch_remote_status(None, "/devbox", console=MagicMock())
+            invoke_action("demo-action", {}, "/devbox", console=MagicMock())
 
 
 @responses.activate
-def test_fetch_remote_status_requires_terminal_event():
+def test_invoke_action_requires_terminal_event():
     responses.add(
         responses.POST,
         FUNCTION_URL,
         body=(
-            '{"type":"result","action":"status","message":"ready",'
-            '"data":{"instances":[],"volumes":[],"snapshots":[]}}\n'
+            '{"type":"result","action":"demo-action","message":"ready","data":{"ok":true}}\n'
         ),
         content_type=NDJSON_MIME_TYPE,
         status=200,
@@ -175,15 +170,15 @@ def test_fetch_remote_status_requires_terminal_event():
         return_value=FUNCTION_URL,
     ):
         with pytest.raises(RemoteInvocationError, match="terminal event"):
-            fetch_remote_status(None, "/devbox", console=MagicMock())
+            invoke_action("demo-action", {}, "/devbox", console=MagicMock())
 
 
 @responses.activate
-def test_fetch_remote_status_surfaces_terminal_error_event():
+def test_invoke_action_surfaces_terminal_error_event():
     responses.add(
         responses.POST,
         FUNCTION_URL,
-        body='{"type":"error","action":"status","message":"boom","data":{}}\n',
+        body='{"type":"error","action":"demo-action","message":"boom","data":{}}\n',
         content_type=NDJSON_MIME_TYPE,
         status=200,
     )
@@ -193,15 +188,15 @@ def test_fetch_remote_status_surfaces_terminal_error_event():
         return_value=FUNCTION_URL,
     ):
         with pytest.raises(RemoteInvocationError, match="boom"):
-            fetch_remote_status(None, "/devbox", console=MagicMock())
+            invoke_action("demo-action", {}, "/devbox", console=MagicMock())
 
 
 @responses.activate
-def test_fetch_remote_status_rejects_success_without_result():
+def test_invoke_action_rejects_success_without_result():
     responses.add(
         responses.POST,
         FUNCTION_URL,
-        body='{"type":"success","action":"status","message":"done","data":{}}\n',
+        body='{"type":"success","action":"demo-action","message":"done","data":{}}\n',
         content_type=NDJSON_MIME_TYPE,
         status=200,
     )
@@ -214,4 +209,4 @@ def test_fetch_remote_status_rejects_success_without_result():
             RemoteInvocationError,
             match="did not include a result event",
         ):
-            fetch_remote_status(None, "/devbox", console=MagicMock())
+            invoke_action("demo-action", {}, "/devbox", console=MagicMock())

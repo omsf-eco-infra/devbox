@@ -7,9 +7,9 @@ import sys
 import click
 from typing import Optional
 
+from .commands.status import run_status_command
 from .devbox_manager import DevBoxManager
 from .console_output import ConsoleOutput
-from .remote_client import fetch_remote_status
 
 DEFAULT_PARAM_PREFIX = "/devbox"
 PARAM_PREFIX_ENV_VAR = "DEVBOX_PARAM_PREFIX"
@@ -63,16 +63,11 @@ def status(
     console = ctx.obj["console"]
 
     try:
-        result = fetch_remote_status(
+        run_status_command(
             project=project,
             param_prefix=param_prefix,
             console=console,
         )
-
-        console.print_instances(result["instances"])
-        console.print_volumes(result["volumes"])
-        console.print_snapshots(result["snapshots"])
-
     except Exception as e:
         console.print_error(f"Failed to retrieve status: {str(e)}")
         sys.exit(1)

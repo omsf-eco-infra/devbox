@@ -17,6 +17,7 @@
 - Packaging: the original shared-image plan is superseded for phase 1. The CLI Lambda gets its own image because Lambda Web Adapter would interfere with the existing handler-based Lambdas if we baked it into the current shared image.
 - Protocol ownership: shared wire-format constants plus the action and event enums live in `src/devbox/cli_protocol.py`. Future actions should extend that shared module instead of re-declaring protocol strings in the CLI and Lambda separately.
 - Lambda routing: the CLI Lambda router uses an explicit dispatch table keyed by the shared action enum. Future actions should add themselves to that dispatch table rather than branching on ad hoc string comparisons.
+- Command-module layout: command-specific client-side and Lambda-side behavior now lives under `src/devbox/commands/<action>.py`. `cli.py` remains the Click entry point, `remote_client.py` remains generic transport, and `cli_lambda/app.py` remains the generic dispatch layer.
 - IAM layout: keep one CLI Lambda IAM statement per action wherever practical so permissions can be reviewed incrementally as commands migrate.
 - Phase 1 `status` Lambda permissions are intentionally EC2-only. The local CLI resolves the Function URL from SSM, and the Lambda-side `status` handler currently reuses `DevBoxManager.list_*` inventory helpers that call EC2 `Describe*` APIs only.
 - Documentation authority: this file is authoritative for phase 1. Any older standalone CLI migration spec is advisory only until it is reconciled back into this document.
@@ -158,9 +159,9 @@ Milestone: `devbox status [project]` runs from the local CLI through the deploye
 
 ### Phase 1 Validation Log
 
-- `2026-03-31`: targeted phase 1 pytest suite passed after the protocol/test-layout refactor.
-  - Command: `pixi run -e dev python -m pytest tests/cli_lambda/test_contracts.py tests/cli_lambda/test_app.py tests/cli_lambda/test_status.py tests/test_remote_client.py tests/test_cli.py -q`
-  - Result: `80 passed, 1 warning`
+- `2026-03-31`: targeted phase 1 pytest suite passed after the command-module refactor.
+  - Command: `pixi run -e dev python -m pytest tests/commands/test_status.py tests/cli_lambda/test_contracts.py tests/cli_lambda/test_app.py tests/test_remote_client.py tests/test_cli.py -q`
+  - Result: `84 passed, 1 warning`
 - `2026-03-31`: Terraform formatting passed.
   - Command: `tofu fmt`
   - Result: passed
@@ -174,11 +175,26 @@ Milestone: `devbox status [project]` runs from the local CLI through the deploye
 
 - The shared wire contract now lives in `src/devbox/cli_protocol.py`. Extend `CliAction` and the shared protocol constants there first whenever a new remote command is added.
 - `tests/cli_lambda/test_contracts.py` owns low-level request/event contract coverage. `tests/cli_lambda/test_app.py` owns dispatch and execution-failure behavior. Keep that split as more actions land.
+- `tests/commands/test_status.py` now owns the `status` command semantics across both CLI-side and Lambda-side behavior. Keep command-specific tests near the command module instead of spreading them across transport and app test files.
 - The CLI Lambda router in `src/devbox/cli_lambda/app.py` is organized around `ACTION_HANDLERS`. Future actions should wire themselves into that table and add parametrized coverage rather than growing one-off branching tests.
+- `status` is the template command for the new `src/devbox/commands/<action>.py` layout. Future simple commands should follow that module pattern first; only extract a shared helper after a second migrated command proves the duplication is real.
 - The phase 1 IAM policy in `modules/cli-lambda/main.tf` is intentionally grouped per action. Keep that structure so later PRs can show exactly which permissions each migrated command added.
 - Do not add SSM or DynamoDB permissions to the CLI Lambda just because `DevBoxManager` can use them elsewhere. Add them only when a migrated Lambda action actually reads those services.
 - Remaining phase 1 blockers: real deployed-AWS end-to-end validation for `devbox status`, plus a successful `tofu validate` run in an environment where local AWS/provider initialization works.
-- Next session starts here: deploy the CLI Lambda, confirm `${param_prefix}/cli/functionUrl` exists in SSM, run local `devbox status` both with and without a project filter against deployed AWS, and record the exact commands and observed results in this file before starting phase 2.
+- Next session starts here: rerun the deployed-AWS `devbox status` validation if credentials and infrastructure are available, append the exact commands/results here, and then start phase 2 `terminate` using the `src/devbox/commands/<action>.py` pattern established by `status`.
+
+### Inter-Phase Refactor: Command Modules
+
+Milestone: `status` command-specific behavior is co-located under `src/devbox/commands/status.py`, while `cli.py`, `remote_client.py`, and `cli_lambda/app.py` remain generic entrypoint, transport, and router layers.
+
+- [x] Update this file to record the command-module layout decision and handoff guidance.
+- [x] Add `src/devbox/commands` and package it for distribution.
+- [x] Move `status` client-side and Lambda-side command behavior into `src/devbox/commands/status.py`.
+- [x] Keep `src/devbox/remote_client.py` generic by removing `status`-specific helpers.
+- [x] Keep `src/devbox/cli.py` as a thin Click wrapper that delegates to the `status` command module.
+- [x] Keep `src/devbox/cli_lambda/app.py` as the generic router and dispatch `status` through the command module.
+- [x] Move `status` command tests to `tests/commands/test_status.py`.
+- [x] Run the targeted refactor validation suite and record the result here.
 
 ## Phase 2: `terminate`
 

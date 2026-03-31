@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
 from typing import Any, Iterable
 from urllib.parse import urlparse
@@ -220,62 +219,3 @@ def invoke_action(
         return result_data
     finally:
         response.close()
-
-
-def rehydrate_status_result(payload: dict[str, Any]) -> dict[str, Any]:
-    """Convert serialized status timestamps back to datetimes."""
-    instances = payload.get("instances")
-    volumes = payload.get("volumes")
-    snapshots = payload.get("snapshots")
-    if (
-        not isinstance(instances, list)
-        or not isinstance(volumes, list)
-        or not isinstance(snapshots, list)
-    ):
-        raise RemoteInvocationError(
-            "Remote status result did not include the expected collections."
-        )
-
-    for instance in instances:
-        if not isinstance(instance, dict):
-            raise RemoteInvocationError("Remote status instances payload is malformed.")
-        launch_time = instance.get("LaunchTime")
-        if launch_time is not None:
-            if not isinstance(launch_time, str):
-                raise RemoteInvocationError(
-                    "Remote status LaunchTime must be an ISO 8601 string."
-                )
-            instance["LaunchTime"] = datetime.fromisoformat(launch_time)
-
-    for snapshot in snapshots:
-        if not isinstance(snapshot, dict):
-            raise RemoteInvocationError("Remote status snapshots payload is malformed.")
-        start_time = snapshot.get("StartTime")
-        if start_time is not None:
-            if not isinstance(start_time, str):
-                raise RemoteInvocationError(
-                    "Remote status StartTime must be an ISO 8601 string."
-                )
-            snapshot["StartTime"] = datetime.fromisoformat(start_time)
-
-    for volume in volumes:
-        if not isinstance(volume, dict):
-            raise RemoteInvocationError("Remote status volumes payload is malformed.")
-
-    return payload
-
-
-def fetch_remote_status(
-    project: str | None,
-    param_prefix: str,
-    console: Any | None = None,
-) -> dict[str, Any]:
-    """Fetch status data from the CLI Lambda and rehydrate timestamps."""
-    payload = {"project": project}
-    result = invoke_action(
-        action=CliAction.STATUS,
-        payload=payload,
-        param_prefix=param_prefix,
-        console=console,
-    )
-    return rehydrate_status_result(result)

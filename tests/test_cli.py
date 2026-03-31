@@ -1,47 +1,11 @@
 """Unit tests for devbox CLI module."""
 
-from datetime import datetime, timezone
 import pytest
 from unittest.mock import MagicMock, patch, call
 from click.testing import CliRunner
 
 from devbox.cli import cli, status, terminate, launch, delete_project, main
 from devbox.utils import AWSClientError
-
-
-def make_status_result(project: str = "test") -> dict:
-    return {
-        "instances": [
-            {
-                "InstanceId": "i-test",
-                "Project": project,
-                "PublicIpAddress": "54.0.0.1",
-                "LaunchTime": datetime(2026, 3, 30, 20, 30, tzinfo=timezone.utc),
-                "State": "running",
-                "InstanceType": "t3.medium",
-            }
-        ],
-        "volumes": [
-            {
-                "VolumeId": "vol-test",
-                "Project": project,
-                "State": "in-use",
-                "Size": 100,
-                "AvailabilityZone": "us-east-1a",
-                "IsOrphaned": False,
-            }
-        ],
-        "snapshots": [
-            {
-                "SnapshotId": "snap-test",
-                "Project": project,
-                "VolumeSize": 100,
-                "Progress": "100%",
-                "StartTime": datetime(2026, 3, 30, 18, 0, tzinfo=timezone.utc),
-                "IsOrphaned": False,
-            }
-        ],
-    }
 
 
 def test_cli_help():
@@ -62,31 +26,30 @@ def test_cli_version():
     assert result.exit_code in [0, 1]
 
 
-@patch("devbox.cli.fetch_remote_status")
+@patch("devbox.cli.run_status_command")
 @patch("devbox.cli.ConsoleOutput")
-def test_cli_context_initialization_success(mock_console_class, mock_fetch_remote_status):
+def test_cli_context_initialization_success(mock_console_class, mock_run_status_command):
     mock_console = MagicMock()
     mock_console_class.return_value = mock_console
-    mock_fetch_remote_status.return_value = make_status_result()
 
     runner = CliRunner()
     result = runner.invoke(cli, ["status"])
 
     assert result.exit_code == 0
     mock_console_class.assert_called_once()
-    mock_fetch_remote_status.assert_called_once_with(
+    mock_run_status_command.assert_called_once_with(
         project=None,
         param_prefix="/devbox",
         console=mock_console,
     )
 
 
-@patch("devbox.cli.fetch_remote_status")
+@patch("devbox.cli.run_status_command")
 @patch("devbox.cli.ConsoleOutput")
-def test_cli_context_initialization_failure(mock_console_class, mock_fetch_remote_status):
+def test_cli_context_initialization_failure(mock_console_class, mock_run_status_command):
     mock_console = MagicMock()
     mock_console_class.return_value = mock_console
-    mock_fetch_remote_status.side_effect = Exception("Remote status failed")
+    mock_run_status_command.side_effect = Exception("Remote status failed")
 
     runner = CliRunner()
     result = runner.invoke(cli, ["status"])
@@ -107,70 +70,63 @@ class TestStatusCommand:
         assert "Show status of DevBox resources" in result.output
         assert "PROJECT" in result.output
 
-    @patch("devbox.cli.fetch_remote_status")
+    @patch("devbox.cli.run_status_command")
     @patch("devbox.cli.ConsoleOutput")
-    def test_status_no_project_filter(self, mock_console_class, mock_fetch_remote_status):
+    def test_status_no_project_filter(self, mock_console_class, mock_run_status_command):
         mock_console = MagicMock()
         mock_console_class.return_value = mock_console
-        result_payload = make_status_result()
-        mock_fetch_remote_status.return_value = result_payload
 
         self.runner = CliRunner()
         result = self.runner.invoke(cli, ["status"])
 
         assert result.exit_code == 0
-        mock_fetch_remote_status.assert_called_once_with(
+        mock_run_status_command.assert_called_once_with(
             project=None,
             param_prefix="/devbox",
             console=mock_console,
         )
-        mock_console.print_instances.assert_called_once_with(result_payload["instances"])
-        mock_console.print_volumes.assert_called_once_with(result_payload["volumes"])
-        mock_console.print_snapshots.assert_called_once_with(result_payload["snapshots"])
 
-    @patch("devbox.cli.fetch_remote_status")
+    @patch("devbox.cli.run_status_command")
     @patch("devbox.cli.ConsoleOutput")
-    def test_status_with_project_filter(self, mock_console_class, mock_fetch_remote_status):
+    def test_status_with_project_filter(self, mock_console_class, mock_run_status_command):
         mock_console = MagicMock()
         mock_console_class.return_value = mock_console
-        mock_fetch_remote_status.return_value = make_status_result("my-project")
 
         self.runner = CliRunner()
         result = self.runner.invoke(cli, ["status", "my-project"])
 
         assert result.exit_code == 0
-        mock_fetch_remote_status.assert_called_once_with(
+        mock_run_status_command.assert_called_once_with(
             project="my-project",
             param_prefix="/devbox",
             console=mock_console,
         )
 
-    @patch("devbox.cli.fetch_remote_status")
+    @patch("devbox.cli.run_status_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_status_with_param_prefix_option(
-        self, mock_console_class, mock_fetch_remote_status
+        self, mock_console_class, mock_run_status_command
     ):
         mock_console = MagicMock()
         mock_console_class.return_value = mock_console
-        mock_fetch_remote_status.return_value = make_status_result()
 
         result = self.runner.invoke(
             cli, ["status", "--param-prefix", "/custom/devbox"]
         )
 
         assert result.exit_code == 0
-        mock_fetch_remote_status.assert_called_once_with(
+        mock_run_status_command.assert_called_once_with(
             project=None,
             param_prefix="/custom/devbox",
             console=mock_console,
         )
 
-    @patch("devbox.cli.fetch_remote_status")
+    @patch("devbox.cli.run_status_command")
     @patch("devbox.cli.ConsoleOutput")
-    def test_status_manager_error(self, mock_console_class, mock_fetch_remote_status):
+    def test_status_manager_error(self, mock_console_class, mock_run_status_command):
         mock_console = MagicMock()
         mock_console_class.return_value = mock_console
-        mock_fetch_remote_status.side_effect = AWSClientError("AWS error")
+        mock_run_status_command.side_effect = AWSClientError("AWS error")
 
         self.runner = CliRunner()
         result = self.runner.invoke(cli, ["status"])
@@ -180,12 +136,12 @@ class TestStatusCommand:
         error_call = mock_console.print_error.call_args[0][0]
         assert "Failed to retrieve status" in error_call
 
-    @patch("devbox.cli.fetch_remote_status")
+    @patch("devbox.cli.run_status_command")
     @patch("devbox.cli.ConsoleOutput")
-    def test_status_general_exception(self, mock_console_class, mock_fetch_remote_status):
+    def test_status_general_exception(self, mock_console_class, mock_run_status_command):
         mock_console = MagicMock()
         mock_console_class.return_value = mock_console
-        mock_fetch_remote_status.side_effect = Exception("General error")
+        mock_run_status_command.side_effect = Exception("General error")
 
         self.runner = CliRunner()
         result = self.runner.invoke(cli, ["status"])
@@ -840,40 +796,37 @@ class TestIntegrationScenarios:
         """Set up test runner."""
         self.runner = CliRunner()
 
-    @patch("devbox.cli.fetch_remote_status")
+    @patch("devbox.cli.run_status_command")
     @patch("devbox.cli.ConsoleOutput")
-    def test_status_empty_results(self, mock_console_class, mock_fetch_remote_status):
+    def test_status_empty_results(self, mock_console_class, mock_run_status_command):
         """Test status command with empty results."""
         mock_console = MagicMock()
         mock_console_class.return_value = mock_console
-        mock_fetch_remote_status.return_value = {
-            "instances": [],
-            "volumes": [],
-            "snapshots": [],
-        }
 
         result = self.runner.invoke(cli, ["status"])
 
         assert result.exit_code == 0
-        mock_console.print_instances.assert_called_once_with([])
-        mock_console.print_volumes.assert_called_once_with([])
-        mock_console.print_snapshots.assert_called_once_with([])
+        mock_run_status_command.assert_called_once_with(
+            project=None,
+            param_prefix="/devbox",
+            console=mock_console,
+        )
 
-    @patch("devbox.cli.fetch_remote_status")
+    @patch("devbox.cli.run_status_command")
     @patch("devbox.cli.ConsoleOutput")
-    def test_status_with_realistic_data(self, mock_console_class, mock_fetch_remote_status):
+    def test_status_with_realistic_data(self, mock_console_class, mock_run_status_command):
         """Test status command with realistic data."""
         mock_console = MagicMock()
         mock_console_class.return_value = mock_console
-        result_payload = make_status_result("my-devbox")
-        mock_fetch_remote_status.return_value = result_payload
 
         result = self.runner.invoke(cli, ["status", "my-devbox"])
 
         assert result.exit_code == 0
-        mock_console.print_instances.assert_called_once_with(result_payload["instances"])
-        mock_console.print_volumes.assert_called_once_with(result_payload["volumes"])
-        mock_console.print_snapshots.assert_called_once_with(result_payload["snapshots"])
+        mock_run_status_command.assert_called_once_with(
+            project="my-devbox",
+            param_prefix="/devbox",
+            console=mock_console,
+        )
 
     @patch("devbox.launch.launch_programmatic")
     @patch("devbox.cli.ConsoleOutput")
@@ -921,15 +874,15 @@ class TestErrorHandlingPatterns:
         """Set up test runner."""
         self.runner = CliRunner()
 
-    @patch("devbox.cli.fetch_remote_status")
+    @patch("devbox.cli.run_status_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_context_initialization_error_handling(
-        self, mock_console_class, mock_fetch_remote_status
+        self, mock_console_class, mock_run_status_command
     ):
         """Test error handling during context initialization."""
         mock_console = MagicMock()
         mock_console_class.return_value = mock_console
-        mock_fetch_remote_status.side_effect = AWSClientError("Remote status failure")
+        mock_run_status_command.side_effect = AWSClientError("Remote status failure")
 
         result = self.runner.invoke(cli, ["status"])
 
@@ -945,11 +898,11 @@ class TestErrorHandlingPatterns:
             (["terminate", "i-test"], None),
         ],
     )
-    @patch("devbox.cli.fetch_remote_status")
+    @patch("devbox.cli.run_status_command")
     @patch("devbox.cli.DevBoxManager")
     @patch("devbox.cli.ConsoleOutput")
     def test_consistent_error_exit_codes(
-        self, mock_console_class, mock_manager_class, mock_fetch_remote_status, command, args
+        self, mock_console_class, mock_manager_class, mock_run_status_command, command, args
     ):
         """Test consistent error exit codes across commands."""
         mock_console = MagicMock()
@@ -958,7 +911,7 @@ class TestErrorHandlingPatterns:
         mock_manager_class.return_value = mock_manager
 
         if "status" in command:
-            mock_fetch_remote_status.side_effect = Exception("Test error")
+            mock_run_status_command.side_effect = Exception("Test error")
         elif "terminate" in command:
             mock_manager.terminate_instance.side_effect = Exception("Test error")
 
@@ -998,17 +951,12 @@ class TestCommandChaining:
         """Set up test runner."""
         self.runner = CliRunner()
 
-    @patch("devbox.cli.fetch_remote_status")
+    @patch("devbox.cli.run_status_command")
     @patch("devbox.cli.ConsoleOutput")
-    def test_multiple_status_calls(self, mock_console_class, mock_fetch_remote_status):
+    def test_multiple_status_calls(self, mock_console_class, mock_run_status_command):
         """Test multiple status calls are independent."""
         mock_console = MagicMock()
         mock_console_class.return_value = mock_console
-        mock_fetch_remote_status.return_value = {
-            "instances": [],
-            "volumes": [],
-            "snapshots": [],
-        }
 
         # First call
         result1 = self.runner.invoke(cli, ["status"])
@@ -1023,16 +971,16 @@ class TestCommandChaining:
             call(project=None, param_prefix="/devbox", console=mock_console),
             call(project="different-project", param_prefix="/devbox", console=mock_console),
         ]
-        mock_fetch_remote_status.assert_has_calls(expected_calls)
+        mock_run_status_command.assert_has_calls(expected_calls)
 
-    @patch("devbox.cli.fetch_remote_status")
+    @patch("devbox.cli.run_status_command")
     @patch("devbox.cli.DevBoxManager")
     @patch("devbox.cli.ConsoleOutput")
     def test_command_state_isolation(
         self,
         mock_console_class,
         mock_manager_class,
-        mock_fetch_remote_status,
+        mock_run_status_command,
     ):
         """Test commands don't affect each other's state."""
         mock_console = MagicMock()
@@ -1040,12 +988,6 @@ class TestCommandChaining:
         mock_console_class.return_value = mock_console
         mock_manager_class.return_value = mock_manager
 
-        # Configure different behaviors
-        mock_fetch_remote_status.return_value = {
-            "instances": [],
-            "volumes": [],
-            "snapshots": [],
-        }
         mock_manager.terminate_instance.return_value = {
             "instance_id": "i-test",
             "project": "test-project",
@@ -1059,7 +1001,7 @@ class TestCommandChaining:
         assert result2.exit_code == 0
 
         # Verify each command called its respective methods
-        mock_fetch_remote_status.assert_called_once_with(
+        mock_run_status_command.assert_called_once_with(
             project=None,
             param_prefix="/devbox",
             console=mock_console,
@@ -1071,25 +1013,20 @@ class TestParamPrefixEnvironmentOverrides:
     def setup_method(self):
         self.runner = CliRunner()
 
-    @patch("devbox.cli.fetch_remote_status")
+    @patch("devbox.cli.run_status_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_status_uses_param_prefix_from_env(
-        self, mock_console_class, mock_fetch_remote_status
+        self, mock_console_class, mock_run_status_command
     ):
         mock_console = MagicMock()
         mock_console_class.return_value = mock_console
-        mock_fetch_remote_status.return_value = {
-            "instances": [],
-            "volumes": [],
-            "snapshots": [],
-        }
 
         result = self.runner.invoke(
             cli, ["status"], env={"DEVBOX_PARAM_PREFIX": "/env/devbox"}
         )
 
         assert result.exit_code == 0
-        mock_fetch_remote_status.assert_called_once_with(
+        mock_run_status_command.assert_called_once_with(
             project=None,
             param_prefix="/env/devbox",
             console=mock_console,
