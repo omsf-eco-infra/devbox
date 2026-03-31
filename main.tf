@@ -26,6 +26,13 @@ module "snapshot_lambda" {
   prefix = var.prefix
 }
 
+module "cli_lambda" {
+  source = "./modules/cli-lambda"
+
+  prefix       = var.prefix
+  param_prefix = "/${var.prefix}"
+}
+
 module "dns_cleanup_lambda" {
   source = "./modules/dns-cleanup-lambda"
 

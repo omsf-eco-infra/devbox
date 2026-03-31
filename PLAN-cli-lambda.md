@@ -14,7 +14,8 @@
 - Auth: CLI signs HTTP requests with AWS SigV4.
 - Response model: NDJSON event stream with `progress`, `warning`, `result`, `success`, and `error`.
 - Python streaming implementation: Lambda Web Adapter.
-- Packaging: add the CLI Lambda to the existing shared Lambda image rather than creating a separate image.
+- Packaging: the original shared-image plan is superseded for phase 1. The CLI Lambda gets its own image because Lambda Web Adapter would interfere with the existing handler-based Lambdas if we baked it into the current shared image.
+- Documentation authority: this file is authoritative for phase 1. Any older standalone CLI migration spec is advisory only until it is reconciled back into this document.
 - Dependencies: `requests` may be added to runtime dependencies; `responses` may be added to test dependencies.
 - End-of-phase validation: real local CLI invocation against deployed AWS, not just local mocks or container smoke tests.
 - `new` is deferred but remains in scope, even though the current CLI references a missing implementation.
@@ -60,32 +61,107 @@
 
 Milestone: `devbox status [project]` runs from the local CLI through the deployed CLI Lambda and renders the same tables as today.
 
-- [ ] Create the authoritative wire-contract section in this file for `status`, including request payload, result payload, and terminal event rules.
-- [ ] Add runtime support for HTTP invocation in the CLI, using `requests` plus SigV4 signing helpers.
-- [ ] Add a shared remote-invocation layer in the CLI for:
-  - [ ] SSM Function URL lookup
-  - [ ] request envelope creation
-  - [ ] signed HTTP POST
-  - [ ] NDJSON event parsing
-  - [ ] terminal-event validation
-  - [ ] error mapping to current CLI exit behavior
-- [ ] Add a new CLI Lambda handler/router to the shared Lambda image.
-- [ ] Add Lambda Web Adapter support to the image build.
-- [ ] Add Terraform resources for the CLI Lambda, Function URL, IAM, log group, and SSM parameter publication.
-- [ ] Implement the remote `status` action in Lambda by reusing the existing `DevBoxManager` inventory logic rather than duplicating AWS queries.
-- [ ] Define and implement timestamp serialization in Lambda and timestamp rehydration in the CLI so existing console rendering still works.
-- [ ] Keep `status` as the only migrated command in this phase; all other commands remain local.
-- [ ] Add tests for:
-  - [ ] Function URL lookup
-  - [ ] signed request dispatch
-  - [ ] streamed NDJSON parsing
-  - [ ] successful `status` result rendering
-  - [ ] malformed stream handling
-  - [ ] HTTP/auth failure handling
-  - [ ] missing SSM parameter handling
-- [ ] Run `pixi run -e dev python -m pytest` for touched tests.
-- [ ] Run `tofu fmt` and `tofu validate` for touched Terraform.
+- [x] Create the authoritative wire-contract section in this file for `status`, including request payload, result payload, and terminal event rules.
+- [x] Add runtime support for HTTP invocation in the CLI, using `requests` plus SigV4 signing helpers.
+- [x] Add a shared remote-invocation layer in the CLI for:
+  - [x] SSM Function URL lookup
+  - [x] request envelope creation
+  - [x] signed HTTP POST
+  - [x] NDJSON event parsing
+  - [x] terminal-event validation
+  - [x] error mapping to current CLI exit behavior
+- [x] Add a new CLI Lambda handler/router in a separate CLI Lambda image.
+- [x] Add Lambda Web Adapter support to the CLI Lambda image build.
+- [x] Add Terraform resources for the CLI Lambda, Function URL, IAM, log group, and SSM parameter publication.
+- [x] Implement the remote `status` action in Lambda by reusing the existing `DevBoxManager` inventory logic rather than duplicating AWS queries.
+- [x] Define and implement timestamp serialization in Lambda and timestamp rehydration in the CLI so existing console rendering still works.
+- [x] Keep `status` as the only migrated command in this phase; all other commands remain local.
+- [x] Add tests for:
+  - [x] Function URL lookup
+  - [x] signed request dispatch
+  - [x] streamed NDJSON parsing
+  - [x] successful `status` result rendering
+  - [x] malformed stream handling
+  - [x] HTTP/auth failure handling
+  - [x] missing SSM parameter handling
+- [x] Run `pixi run -e dev python -m pytest` for touched tests.
+- [x] Run `tofu fmt` for touched Terraform.
+- [ ] Run `tofu validate` for touched Terraform.
 - [ ] Record the exact local end-to-end validation command and observed outcome in this file.
+
+### Phase 1 `status` Contract
+
+- Request envelope:
+
+```json
+{
+  "version": "v1",
+  "action": "status",
+  "request_id": "uuid",
+  "param_prefix": "/devbox",
+  "payload": {
+    "project": null
+  }
+}
+```
+
+- `payload.project` may be a project name string or `null`.
+- Success path event sequence:
+  - exactly one `result` event with the full status payload
+  - exactly one terminal `success` event
+- `status` result payload shape:
+
+```json
+{
+  "instances": [
+    {
+      "InstanceId": "i-0123456789abcdef0",
+      "Project": "my-project",
+      "PublicIpAddress": "54.0.0.1",
+      "LaunchTime": "2026-03-30T20:30:00+00:00",
+      "State": "running",
+      "InstanceType": "t3.medium"
+    }
+  ],
+  "volumes": [
+    {
+      "VolumeId": "vol-0123456789abcdef0",
+      "Project": "my-project",
+      "State": "in-use",
+      "Size": 100,
+      "AvailabilityZone": "us-east-1a",
+      "IsOrphaned": false
+    }
+  ],
+  "snapshots": [
+    {
+      "SnapshotId": "snap-0123456789abcdef0",
+      "Project": "my-project",
+      "Progress": "100%",
+      "VolumeSize": 100,
+      "StartTime": "2026-03-30T18:00:00+00:00",
+      "IsOrphaned": false
+    }
+  ]
+}
+```
+
+- The CLI must rehydrate `LaunchTime` and `StartTime` to `datetime` objects before calling `ConsoleOutput`.
+- Phase 1 `status` does not render progress events; warnings and errors may still be surfaced immediately.
+
+### Phase 1 Validation Log
+
+- `2026-03-31`: targeted phase 1 pytest suite passed.
+  - Command: `pixi run -e dev python -m pytest tests/test_cli.py tests/test_remote_client.py tests/cli_lambda/test_app.py tests/cli_lambda/test_status.py -q`
+  - Result: `76 passed, 1 warning`
+- `2026-03-31`: Terraform formatting passed.
+  - Command: `tofu fmt`
+  - Result: passed
+- `2026-03-31`: Terraform validation blocked by local AWS auth/backend state from `.local.tf`.
+  - Commands attempted: `tofu validate`, `tofu init -backend=false`, `tofu init -backend=false -reconfigure`
+  - Result: blocked before module validation because provider/backend initialization required valid AWS credentials in the local environment
+- End-to-end commands: pending
+- Observed outcome: pending
 
 ## Phase 2: `terminate`
 

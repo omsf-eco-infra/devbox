@@ -9,6 +9,7 @@ from typing import Optional
 
 from .devbox_manager import DevBoxManager
 from .console_output import ConsoleOutput
+from .remote_client import fetch_remote_status
 
 DEFAULT_PARAM_PREFIX = "/devbox"
 PARAM_PREFIX_ENV_VAR = "DEVBOX_PARAM_PREFIX"
@@ -60,18 +61,17 @@ def status(
     Otherwise, show all resources.
     """
     console = ctx.obj["console"]
-    manager = get_manager(console, param_prefix)
 
     try:
-        # List instances, volumes, and snapshots
-        instances = manager.list_instances(project, console)
-        volumes = manager.list_volumes(project, console)
-        snapshots = manager.list_snapshots(project, console)
+        result = fetch_remote_status(
+            project=project,
+            param_prefix=param_prefix,
+            console=console,
+        )
 
-        # Display the results using console methods
-        console.print_instances(instances)
-        console.print_volumes(volumes)
-        console.print_snapshots(snapshots)
+        console.print_instances(result["instances"])
+        console.print_volumes(result["volumes"])
+        console.print_snapshots(result["snapshots"])
 
     except Exception as e:
         console.print_error(f"Failed to retrieve status: {str(e)}")
