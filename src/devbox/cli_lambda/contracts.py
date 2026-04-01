@@ -17,12 +17,26 @@ from ..cli_protocol import (
 
 
 class InvalidCliRequestError(ValueError):
-    """Raised when a CLI Lambda request is malformed."""
+    """Error raised when a CLI Lambda request is malformed."""
 
 
 @dataclass(frozen=True)
 class CliRequestEnvelope:
-    """Validated CLI request envelope."""
+    """Validated CLI request envelope.
+
+    Attributes
+    ----------
+    version : str
+        Wire-format version supplied by the client.
+    action : CliAction
+        Requested remote action.
+    request_id : str
+        Client-generated request identifier.
+    param_prefix : str
+        Parameter prefix supplied by the client.
+    payload : dict[str, Any]
+        Action-specific request payload.
+    """
 
     version: str
     action: CliAction
@@ -32,7 +46,24 @@ class CliRequestEnvelope:
 
 
 def parse_request_envelope(raw_body: bytes) -> CliRequestEnvelope:
-    """Parse and validate a CLI Lambda request body."""
+    """Parse and validate a CLI Lambda request body.
+
+    Parameters
+    ----------
+    raw_body : bytes
+        Raw HTTP request body from the Lambda Function URL.
+
+    Returns
+    -------
+    CliRequestEnvelope
+        Parsed and validated request envelope.
+
+    Raises
+    ------
+    InvalidCliRequestError
+        Raised when the request body is not valid JSON or does not match the
+        expected envelope shape.
+    """
     try:
         body = json.loads(raw_body)
     except json.JSONDecodeError as exc:
@@ -80,7 +111,29 @@ def build_event(
     message: str,
     data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build one NDJSON event payload."""
+    """Build one CLI NDJSON event payload.
+
+    Parameters
+    ----------
+    event_type : CliEventType | str
+        Event type to emit.
+    action : CliAction | str
+        Action associated with the event.
+    message : str
+        Human-readable event message.
+    data : dict[str, Any] | None, optional
+        Structured event payload.
+
+    Returns
+    -------
+    dict[str, Any]
+        JSON-serializable event mapping.
+
+    Raises
+    ------
+    ValueError
+        Raised when ``event_type`` is not part of the shared protocol.
+    """
     event_name = normalize_event_type(event_type)
     if event_name not in EVENT_TYPES:
         raise ValueError(f"Unsupported event type: {event_name}")
@@ -96,5 +149,16 @@ def build_event(
 
 
 def encode_event(event: dict[str, Any]) -> str:
-    """Serialize an event as one NDJSON line."""
+    """Serialize one event mapping as an NDJSON line.
+
+    Parameters
+    ----------
+    event : dict[str, Any]
+        Event payload to serialize.
+
+    Returns
+    -------
+    str
+        Compact JSON string terminated by a newline.
+    """
     return json.dumps(event, separators=(",", ":")) + "\n"

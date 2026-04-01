@@ -26,11 +26,23 @@ from .cli_protocol import (
 
 
 class RemoteInvocationError(utils.DevBoxError):
-    """Raised when a remote CLI Lambda invocation fails."""
+    """Error raised when a remote CLI Lambda invocation fails."""
 
 
 def normalize_param_prefix(param_prefix: str) -> str:
-    """Normalize a CLI parameter prefix to `/prefix` form."""
+    """Normalize a parameter prefix for CLI Lambda discovery.
+
+    Parameters
+    ----------
+    param_prefix : str
+        Raw parameter prefix supplied by the CLI.
+
+    Returns
+    -------
+    str
+        Normalized prefix in ``/name`` form. Empty input falls back to
+        ``/devbox``.
+    """
     stripped = param_prefix.strip("/")
     if not stripped:
         return "/devbox"
@@ -38,7 +50,23 @@ def normalize_param_prefix(param_prefix: str) -> str:
 
 
 def get_cli_function_url(param_prefix: str) -> str:
-    """Resolve the CLI Lambda Function URL from SSM."""
+    """Resolve the CLI Lambda Function URL from SSM.
+
+    Parameters
+    ----------
+    param_prefix : str
+        Parameter prefix used to build the SSM parameter name.
+
+    Returns
+    -------
+    str
+        Function URL stored in SSM.
+
+    Raises
+    ------
+    RemoteInvocationError
+        Raised when the SSM parameter cannot be resolved.
+    """
     normalized_prefix = normalize_param_prefix(param_prefix)
     parameter_name = f"{normalized_prefix}{FUNCTION_URL_PARAMETER_SUFFIX}"
     try:
@@ -50,7 +78,23 @@ def get_cli_function_url(param_prefix: str) -> str:
 
 
 def get_function_url_region(function_url: str) -> str:
-    """Extract the AWS region from a Lambda Function URL."""
+    """Extract the AWS region from a Lambda Function URL.
+
+    Parameters
+    ----------
+    function_url : str
+        Lambda Function URL to inspect.
+
+    Returns
+    -------
+    str
+        AWS region embedded in the Function URL hostname.
+
+    Raises
+    ------
+    RemoteInvocationError
+        Raised when the URL is not a valid Lambda Function URL.
+    """
     parsed = urlparse(function_url)
     hostname = parsed.hostname
     if parsed.scheme != "https" or not hostname:
@@ -68,7 +112,22 @@ def build_request_envelope(
     payload: dict[str, Any],
     param_prefix: str,
 ) -> dict[str, Any]:
-    """Create a request envelope for the CLI Lambda."""
+    """Create a request envelope for the CLI Lambda.
+
+    Parameters
+    ----------
+    action : CliAction | str
+        Remote action to invoke.
+    payload : dict[str, Any]
+        Action-specific request payload.
+    param_prefix : str
+        Parameter prefix used for endpoint discovery.
+
+    Returns
+    -------
+    dict[str, Any]
+        JSON-serializable request envelope.
+    """
     return {
         "version": REQUEST_VERSION,
         "action": normalize_action(action),
@@ -85,7 +144,31 @@ def sign_request(
     region: str,
     session: boto3.session.Session | None = None,
 ) -> dict[str, str]:
-    """Apply SigV4 signing headers for a Lambda Function URL request."""
+    """Apply SigV4 signing headers for a Function URL request.
+
+    Parameters
+    ----------
+    method : str
+        HTTP method to sign.
+    url : str
+        Function URL to invoke.
+    body : str
+        Serialized JSON request body.
+    region : str
+        AWS region for SigV4 signing.
+    session : boto3.session.Session | None, optional
+        Optional boto3 session used to resolve credentials.
+
+    Returns
+    -------
+    dict[str, str]
+        Signed HTTP headers.
+
+    Raises
+    ------
+    RemoteInvocationError
+        Raised when AWS credentials are unavailable.
+    """
     active_session = session or boto3.Session()
     credentials = active_session.get_credentials()
     if credentials is None:
@@ -105,7 +188,24 @@ def sign_request(
 
 
 def parse_event_line(line: str) -> dict[str, Any]:
-    """Parse and validate one NDJSON event line."""
+    """Parse and validate one NDJSON event line.
+
+    Parameters
+    ----------
+    line : str
+        One line from the streamed NDJSON response.
+
+    Returns
+    -------
+    dict[str, Any]
+        Validated event mapping.
+
+    Raises
+    ------
+    RemoteInvocationError
+        Raised when the line is not valid JSON or does not match the expected
+        event shape.
+    """
     try:
         event = json.loads(line)
     except json.JSONDecodeError as exc:
@@ -139,7 +239,18 @@ def parse_event_line(line: str) -> dict[str, Any]:
 
 
 def iter_response_events(response: requests.Response) -> Iterable[dict[str, Any]]:
-    """Yield validated NDJSON events from a Function URL response."""
+    """Yield validated NDJSON events from a Function URL response.
+
+    Parameters
+    ----------
+    response : requests.Response
+        Streaming HTTP response from the Function URL.
+
+    Yields
+    ------
+    dict[str, Any]
+        Validated NDJSON event payloads.
+    """
     for line in response.iter_lines(decode_unicode=True):
         if not line:
             continue
@@ -152,7 +263,30 @@ def invoke_action(
     param_prefix: str,
     console: Any | None = None,
 ) -> dict[str, Any]:
-    """Invoke a CLI Lambda action and return the result payload."""
+    """Invoke a CLI Lambda action and return the result payload.
+
+    Parameters
+    ----------
+    action : CliAction | str
+        Remote action to invoke.
+    payload : dict[str, Any]
+        Action-specific request payload.
+    param_prefix : str
+        Parameter prefix used to discover the Function URL.
+    console : Any | None, optional
+        Console-like object used to surface streamed warnings.
+
+    Returns
+    -------
+    dict[str, Any]
+        Result payload from the remote action.
+
+    Raises
+    ------
+    RemoteInvocationError
+        Raised when endpoint discovery, request signing, HTTP transport, or the
+        streamed response protocol fails.
+    """
     action_name = normalize_action(action)
     function_url = get_cli_function_url(param_prefix)
     region = get_function_url_region(function_url)

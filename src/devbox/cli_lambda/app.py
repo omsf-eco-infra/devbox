@@ -27,7 +27,23 @@ ACTION_HANDLERS: dict[CliAction, ActionHandler] = {
 
 
 def dispatch_action(envelope: CliRequestEnvelope) -> list[dict[str, object]]:
-    """Dispatch one validated CLI Lambda request."""
+    """Dispatch one validated CLI Lambda request.
+
+    Parameters
+    ----------
+    envelope : CliRequestEnvelope
+        Validated request envelope to route.
+
+    Returns
+    -------
+    list[dict[str, object]]
+        Event payloads emitted by the selected action handler.
+
+    Raises
+    ------
+    InvalidCliRequestError
+        Raised when the action is not registered in the dispatch table.
+    """
     try:
         handler = ACTION_HANDLERS[envelope.action]
     except KeyError as exc:
@@ -36,7 +52,25 @@ def dispatch_action(envelope: CliRequestEnvelope) -> list[dict[str, object]]:
 
 
 def execute_action(envelope: CliRequestEnvelope) -> list[dict[str, object]]:
-    """Execute a request and map application failures to terminal error events."""
+    """Execute one CLI Lambda request.
+
+    Parameters
+    ----------
+    envelope : CliRequestEnvelope
+        Validated request envelope to execute.
+
+    Returns
+    -------
+    list[dict[str, object]]
+        Successful action events, or a single terminal ``error`` event when an
+        application-level exception occurs.
+
+    Raises
+    ------
+    InvalidCliRequestError
+        Raised when the request is structurally invalid and should return HTTP
+        400 instead of an application ``error`` event.
+    """
     try:
         return dispatch_action(envelope)
     except InvalidCliRequestError:
@@ -46,7 +80,18 @@ def execute_action(envelope: CliRequestEnvelope) -> list[dict[str, object]]:
 
 
 def stream_events(events: Iterable[dict[str, object]]) -> StreamingResponse:
-    """Create a streaming NDJSON response."""
+    """Create a streaming NDJSON response.
+
+    Parameters
+    ----------
+    events : collections.abc.Iterable[dict[str, object]]
+        Event payloads to encode as NDJSON lines.
+
+    Returns
+    -------
+    StreamingResponse
+        Streaming HTTP response with the CLI NDJSON media type.
+    """
     return StreamingResponse(
         (encode_event(event).encode("utf-8") for event in events),
         media_type=NDJSON_MIME_TYPE,
@@ -54,7 +99,20 @@ def stream_events(events: Iterable[dict[str, object]]) -> StreamingResponse:
 
 
 def invalid_request_response(action: CliAction | str, message: str) -> PlainTextResponse:
-    """Create an NDJSON error response for invalid requests."""
+    """Create an NDJSON HTTP 400 response for invalid requests.
+
+    Parameters
+    ----------
+    action : CliAction | str
+        Action name associated with the invalid request.
+    message : str
+        Human-readable validation error.
+
+    Returns
+    -------
+    PlainTextResponse
+        One-line NDJSON error response with HTTP status 400.
+    """
     event = build_event(CliEventType.ERROR, action, message)
     return PlainTextResponse(
         encode_event(event),
@@ -64,7 +122,19 @@ def invalid_request_response(action: CliAction | str, message: str) -> PlainText
 
 
 async def invoke(request: Request) -> StreamingResponse | PlainTextResponse:
-    """Handle one CLI Function URL request."""
+    """Handle one CLI Function URL request.
+
+    Parameters
+    ----------
+    request : Request
+        Incoming Starlette request from the Lambda Web Adapter.
+
+    Returns
+    -------
+    StreamingResponse | PlainTextResponse
+        Streaming event response for valid requests, or an NDJSON HTTP 400
+        response for invalid requests.
+    """
     envelope: CliRequestEnvelope | None = None
     try:
         envelope = parse_request_envelope(await request.body())
@@ -75,7 +145,18 @@ async def invoke(request: Request) -> StreamingResponse | PlainTextResponse:
 
 
 async def healthcheck(request: Request) -> PlainTextResponse:  # noqa: ARG001
-    """Readiness endpoint for Lambda Web Adapter."""
+    """Serve the Lambda Web Adapter readiness endpoint.
+
+    Parameters
+    ----------
+    request : Request
+        Incoming health-check request.
+
+    Returns
+    -------
+    PlainTextResponse
+        Plain-text ``ok`` readiness response.
+    """
     return PlainTextResponse("ok")
 
 

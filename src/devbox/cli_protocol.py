@@ -10,13 +10,13 @@ FUNCTION_URL_PARAMETER_SUFFIX = "/cli/functionUrl"
 
 
 class CliAction(StrEnum):
-    """Supported Lambda-backed CLI actions."""
+    """Enumeration of supported Lambda-backed CLI actions."""
 
     STATUS = "status"
 
 
 class CliEventType(StrEnum):
-    """Supported NDJSON event types."""
+    """Enumeration of supported CLI NDJSON event types."""
 
     PROGRESS = "progress"
     WARNING = "warning"
@@ -30,14 +30,36 @@ EVENT_TYPES = frozenset(event_type.value for event_type in CliEventType)
 
 
 def normalize_action(action: CliAction | str) -> str:
-    """Return the wire-format action name."""
+    """Normalize an action enum or string to its wire-format value.
+
+    Parameters
+    ----------
+    action : CliAction | str
+        Action enum member or raw action string.
+
+    Returns
+    -------
+    str
+        Wire-format action name.
+    """
     if isinstance(action, CliAction):
         return action.value
     return action
 
 
 def normalize_event_type(event_type: CliEventType | str) -> str:
-    """Return the wire-format event type name."""
+    """Normalize an event enum or string to its wire-format value.
+
+    Parameters
+    ----------
+    event_type : CliEventType | str
+        Event enum member or raw event string.
+
+    Returns
+    -------
+    str
+        Wire-format event type name.
+    """
     if isinstance(event_type, CliEventType):
         return event_type.value
     return event_type

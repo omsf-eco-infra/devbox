@@ -16,7 +16,18 @@ PARAM_PREFIX_ENV_VAR = "DEVBOX_PARAM_PREFIX"
 
 
 def param_prefix_option(func):
-    """Add shared --param-prefix option with env var support."""
+    """Attach the shared ``--param-prefix`` Click option.
+
+    Parameters
+    ----------
+    func
+        Click command callback to decorate.
+
+    Returns
+    -------
+    collections.abc.Callable
+        Decorated Click callback with the shared parameter-prefix option.
+    """
     return click.option(
         "--param-prefix",
         default=DEFAULT_PARAM_PREFIX,
@@ -28,7 +39,25 @@ def param_prefix_option(func):
 
 
 def get_manager(console: ConsoleOutput, param_prefix: str) -> DevBoxManager:
-    """Create a DevBoxManager using the requested parameter prefix."""
+    """Create a ``DevBoxManager`` for the requested parameter prefix.
+
+    Parameters
+    ----------
+    console : ConsoleOutput
+        Console used to surface initialization failures.
+    param_prefix : str
+        SSM parameter prefix requested by the caller.
+
+    Returns
+    -------
+    DevBoxManager
+        Manager configured for the normalized prefix.
+
+    Raises
+    ------
+    SystemExit
+        Raised when AWS client initialization fails.
+    """
     manager_prefix = param_prefix.strip("/") or "devbox"
     try:
         return DevBoxManager(prefix=manager_prefix)
@@ -232,7 +261,7 @@ def delete_project(ctx, project: str, force: bool, param_prefix: str):
 
 
 def main():
-    """Entry point for the CLI."""
+    """Run the Click CLI entry point."""
     cli(obj={})
 
 
