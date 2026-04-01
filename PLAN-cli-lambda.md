@@ -35,7 +35,9 @@
   "action": "status",
   "request_id": "uuid",
   "param_prefix": "/devbox",
-  "payload": {}
+  "payload": {
+    "project": null
+  }
 }
 ```
 
@@ -94,8 +96,8 @@ Milestone: `devbox status [project]` runs from the local CLI through the deploye
   - [x] action dispatch and failure mapping
 - [x] Run `pixi run -e dev python -m pytest` for touched tests.
 - [x] Run `tofu fmt` for touched Terraform.
-- [ ] Run `tofu validate` for touched Terraform.
-- [ ] Record the exact local end-to-end validation command and observed outcome in this file.
+- [x] Run `tofu validate` for touched Terraform.
+- [x] Record the exact local end-to-end validation command and observed outcome in this file.
 
 ### Phase 1 `status` Contract
 
@@ -165,11 +167,13 @@ Milestone: `devbox status [project]` runs from the local CLI through the deploye
 - `2026-03-31`: Terraform formatting passed.
   - Command: `tofu fmt`
   - Result: passed
-- `2026-03-31`: Terraform validation blocked by local AWS auth/backend state from `.local.tf`.
-  - Commands attempted: `tofu validate`, `tofu init -backend=false`, `tofu init -backend=false -reconfigure`
-  - Result: blocked before module validation because provider/backend initialization required valid AWS credentials in the local environment
-- End-to-end commands: pending
-- Observed outcome: pending
+- `2026-03-31`: Terraform validation passed in the real deployment environment after the fresh-account/Public ECR auth fixes were applied.
+  - Command: `tofu validate`
+  - Result: passed
+- End-to-end commands (must be run by DWHS in devbox-deploy/ repo, not for agents)
+  - `tofu plan -out tfplan && tofu apply tfplan` to deploy the CLI Lambda and related infra
+  - `devbox status` against the deployed CLI Lambda, expecting to see the desired output
+- Observed outcome: It works!
 
 ### Phase 1 Handoff Notes
 
@@ -184,8 +188,8 @@ Milestone: `devbox status [project]` runs from the local CLI through the deploye
 - The CLI Lambda `local-exec` build step now uses a temporary `DOCKER_CONFIG` so Terraform does not depend on or mutate the operator's persistent Docker Desktop keychain state on macOS.
 - The phase 1 IAM policy in `modules/cli-lambda/main.tf` is intentionally grouped per action. Keep that structure so later PRs can show exactly which permissions each migrated command added.
 - Do not add SSM or DynamoDB permissions to the CLI Lambda just because `DevBoxManager` can use them elsewhere. Add them only when a migrated Lambda action actually reads those services.
-- Remaining phase 1 blockers: real deployed-AWS end-to-end validation for `devbox status`, plus a successful `tofu validate` run in an environment where local AWS/provider initialization works.
-- Next session starts here: rerun the deployed-AWS `devbox status` validation if credentials and infrastructure are available, append the exact commands/results here, and then start phase 2 `terminate` using the `src/devbox/commands/<action>.py` pattern established by `status`.
+- Remaining phase 1 blockers: none. Phase 1 and the inter-phase command-module refactor are complete.
+- Next session starts here: begin phase 2 `terminate` using the `src/devbox/commands/<action>.py` pattern established by `status`, and preserve the current remote contract/transport structure.
 
 ### Inter-Phase Refactor: Command Modules
 
