@@ -188,6 +188,8 @@ Milestone: `devbox status [project]` runs from the local CLI through the deploye
 - The CLI Lambda `local-exec` build step now uses a temporary `DOCKER_CONFIG` so Terraform does not depend on or mutate the operator's persistent Docker Desktop keychain state on macOS.
 - The phase 1 IAM policy in `modules/cli-lambda/main.tf` is intentionally grouped per action. Keep that structure so later PRs can show exactly which permissions each migrated command added.
 - Do not add SSM or DynamoDB permissions to the CLI Lambda just because `DevBoxManager` can use them elsewhere. Add them only when a migrated Lambda action actually reads those services.
+- The request envelope still carries `param_prefix` from the client. That is acceptable in phase 1 because `status` only reuses EC2 `Describe*` inventory helpers and the CLI Lambda IAM is EC2-only, so the prefix does not currently select SSM or DynamoDB resources. Before any later action uses prefix-derived SSM parameter names, DynamoDB table names, or other non-EC2 resources, add server-side validation/normalization for the prefix or replace the client-provided value with Lambda-side configuration.
+- `src/devbox/remote_client.py` now wraps `requests` transport failures as `RemoteInvocationError`, but it still uses a single `timeout=30` value. Revisit timeout policy in phase 3 before migrating `launch`, because long-lived streaming commands may need separate connect/read timeouts or a longer read timeout to avoid aborting a healthy response stream mid-operation.
 - Remaining phase 1 blockers: none. Phase 1 and the inter-phase command-module refactor are complete.
 - Next session starts here: begin phase 2 `terminate` using the `src/devbox/commands/<action>.py` pattern established by `status`, and preserve the current remote contract/transport structure.
 
@@ -231,6 +233,7 @@ Milestone: `devbox launch ...` runs from the local CLI through the deployed CLI 
 
 - [ ] Extend the wire contract for `launch`, including all current CLI options and the inline userdata payload shape.
 - [ ] Refactor launch logic so Lambda can emit structured progress events instead of relying on raw `print` output.
+- [ ] Revisit the CLI HTTP timeout policy before `launch` goes remote. Phase 1 wraps `requests` transport failures cleanly, but still uses a single `timeout=30`; decide whether streamed commands need separate connect/read timeouts or a longer read timeout.
 - [ ] Preserve shared business logic; do not fork a second launch implementation just for the Lambda path.
 - [ ] Keep local preprocessing in the CLI for:
   - [ ] reading `--userdata-file`

@@ -10,10 +10,9 @@ from starlette.responses import PlainTextResponse, StreamingResponse
 from starlette.routing import Route
 
 from ..commands.status import handle_status_action
-from ..cli_protocol import CliAction, CliEventType
+from ..cli_protocol import NDJSON_MIME_TYPE, CliAction, CliEventType
 from .contracts import (
     CliRequestEnvelope,
-    NDJSON_MIME_TYPE,
     InvalidCliRequestError,
     build_event,
     encode_event,
@@ -54,7 +53,7 @@ def stream_events(events: Iterable[dict[str, object]]) -> StreamingResponse:
     )
 
 
-def invalid_request_response(action: str, message: str) -> PlainTextResponse:
+def invalid_request_response(action: CliAction | str, message: str) -> PlainTextResponse:
     """Create an NDJSON error response for invalid requests."""
     event = build_event(CliEventType.ERROR, action, message)
     return PlainTextResponse(

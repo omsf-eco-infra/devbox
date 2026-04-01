@@ -807,7 +807,7 @@ packages:
 - pypi: ./
   name: devbox
   version: 0.1.0
-  sha256: 013dc303182e9edfacffcfde0ea140be00d9a8900add200d0b349090f99d719f
+  sha256: cb68887476a18064755e84aa285eebfa0d765d4c507f31c070b63a3f8ac684ae
   requires_dist:
   - boto3>=1.26.0
   - click>=8.0.0
@@ -826,7 +826,7 @@ packages:
   - starlette>=0.37.0 ; extra == 'dev'
   - ty>=0.0.1 ; extra == 'dev'
   - uvicorn>=0.30.0 ; extra == 'dev'
-  requires_python: '>=3.9'
+  requires_python: '>=3.11'
 - pypi: https://files.pythonhosted.org/packages/12/b3/231ffd4ab1fc9d679809f356cebee130ac7daa00d6d6f3206dd4fd137e9e/distro-1.9.0-py3-none-any.whl
   name: distro
   version: 1.9.0

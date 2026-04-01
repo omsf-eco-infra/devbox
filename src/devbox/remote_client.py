@@ -11,6 +11,7 @@ import boto3
 import requests
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
+from requests import RequestException
 
 from . import utils
 from .cli_protocol import (
@@ -158,13 +159,18 @@ def invoke_action(
     body = json.dumps(build_request_envelope(action, payload, param_prefix))
     headers = sign_request("POST", function_url, body, region)
 
-    response = requests.post(
-        function_url,
-        data=body,
-        headers=headers,
-        stream=True,
-        timeout=30,
-    )
+    try:
+        response = requests.post(
+            function_url,
+            data=body,
+            headers=headers,
+            stream=True,
+            timeout=30,
+        )
+    except RequestException as exc:
+        raise RemoteInvocationError(
+            f"Remote {action_name} request failed: {exc}"
+        ) from exc
     try:
         if response.status_code >= 400:
             raise RemoteInvocationError(

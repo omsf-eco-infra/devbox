@@ -6,6 +6,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 import responses
 
 from devbox.remote_client import (
@@ -56,10 +57,7 @@ def test_invoke_action_dispatches_signed_request():
         assert request.headers["Content-Type"] == "application/json"
         assert "Authorization" in request.headers
 
-        body = request.body
-        if isinstance(body, bytes):
-            body = body.decode("utf-8")
-        payload = json.loads(body)
+        payload = json.loads(request.body)
         assert payload["action"] == "demo-action"
         assert payload["param_prefix"] == "/devbox"
         assert payload["payload"] == {"project": "demo"}
@@ -151,6 +149,22 @@ def test_invoke_action_rejects_http_errors():
     ):
         with pytest.raises(RemoteInvocationError, match="HTTP 403"):
             invoke_action("demo-action", {}, "/devbox", console=MagicMock())
+
+
+def test_invoke_action_wraps_request_exception():
+    with patch(
+        "devbox.remote_client.utils.get_ssm_parameter",
+        return_value=FUNCTION_URL,
+    ):
+        with patch(
+            "devbox.remote_client.requests.post",
+            side_effect=requests.Timeout("timed out"),
+        ):
+            with pytest.raises(
+                RemoteInvocationError,
+                match=r"Remote demo-action request failed: timed out",
+            ):
+                invoke_action("demo-action", {}, "/devbox", console=MagicMock())
 
 
 @responses.activate

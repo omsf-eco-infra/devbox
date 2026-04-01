@@ -8,7 +8,6 @@ from typing import Any
 
 from ..cli_protocol import (
     EVENT_TYPES,
-    NDJSON_MIME_TYPE,
     REQUEST_VERSION,
     CliAction,
     CliEventType,
