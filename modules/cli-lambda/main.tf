@@ -15,10 +15,7 @@ locals {
   # Keep one statement per CLI action so later phases can add permissions incrementally.
   command_policy_statements = [
     {
-      sid = "StatusEc2Read"
-      # The phase 1 `status` path reuses DevBoxManager.list_* inventory helpers,
-      # which currently issue EC2 Describe* calls only. It does not read SSM or
-      # DynamoDB as part of the status action itself.
+      sid = "StatusCmdPermissions"
       actions = [
         "ec2:DescribeImages",
         "ec2:DescribeInstances",
