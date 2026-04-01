@@ -7,6 +7,7 @@ import sys
 import click
 from typing import Optional
 
+from .commands.status import run_status_command
 from .devbox_manager import DevBoxManager
 from .console_output import ConsoleOutput
 
@@ -15,7 +16,18 @@ PARAM_PREFIX_ENV_VAR = "DEVBOX_PARAM_PREFIX"
 
 
 def param_prefix_option(func):
-    """Add shared --param-prefix option with env var support."""
+    """Attach the shared ``--param-prefix`` Click option.
+
+    Parameters
+    ----------
+    func
+        Click command callback to decorate.
+
+    Returns
+    -------
+    collections.abc.Callable
+        Decorated Click callback with the shared parameter-prefix option.
+    """
     return click.option(
         "--param-prefix",
         default=DEFAULT_PARAM_PREFIX,
@@ -27,7 +39,25 @@ def param_prefix_option(func):
 
 
 def get_manager(console: ConsoleOutput, param_prefix: str) -> DevBoxManager:
-    """Create a DevBoxManager using the requested parameter prefix."""
+    """Create a ``DevBoxManager`` for the requested parameter prefix.
+
+    Parameters
+    ----------
+    console : ConsoleOutput
+        Console used to surface initialization failures.
+    param_prefix : str
+        SSM parameter prefix requested by the caller.
+
+    Returns
+    -------
+    DevBoxManager
+        Manager configured for the normalized prefix.
+
+    Raises
+    ------
+    SystemExit
+        Raised when AWS client initialization fails.
+    """
     manager_prefix = param_prefix.strip("/") or "devbox"
     try:
         return DevBoxManager(prefix=manager_prefix)
@@ -60,19 +90,13 @@ def status(
     Otherwise, show all resources.
     """
     console = ctx.obj["console"]
-    manager = get_manager(console, param_prefix)
 
     try:
-        # List instances, volumes, and snapshots
-        instances = manager.list_instances(project, console)
-        volumes = manager.list_volumes(project, console)
-        snapshots = manager.list_snapshots(project, console)
-
-        # Display the results using console methods
-        console.print_instances(instances)
-        console.print_volumes(volumes)
-        console.print_snapshots(snapshots)
-
+        run_status_command(
+            project=project,
+            param_prefix=param_prefix,
+            console=console,
+        )
     except Exception as e:
         console.print_error(f"Failed to retrieve status: {str(e)}")
         sys.exit(1)
@@ -237,7 +261,7 @@ def delete_project(ctx, project: str, force: bool, param_prefix: str):
 
 
 def main():
-    """Entry point for the CLI."""
+    """Run the Click CLI entry point."""
     cli(obj={})
 
 

@@ -10,7 +10,7 @@ authors = [
     {name = "David W.H. Swenson", email = "dwhs@hyperblazer.net"},
 ]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -20,18 +20,26 @@ dependencies = [
     "boto3>=1.26.0",
     "click>=8.0.0",
     "cloudflare>=4.3.1",
+    "requests>=2.31.0",
     "rich>=12.0.0",
 ]
 
 [project.optional-dependencies]
+cli_lambda = [
+    "starlette>=0.37.0",
+    "uvicorn>=0.30.0",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=3.0.0",
     "moto>=4.0.0",
     "mypy-boto3-ec2>=1.26.0",
     "mypy-boto3-dynamodb>=1.26.0",
+    "responses>=0.25.0",
     "ruff>=0.1.0",
+    "starlette>=0.37.0",
     "ty>=0.0.1",
+    "uvicorn>=0.30.0",
 ]
 
 [project.scripts]
@@ -39,7 +47,7 @@ devbox = "devbox.cli:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-packages = ["devbox", "devbox.lifecycle"]
+packages = ["devbox", "devbox.commands", "devbox.cli_lambda", "devbox.lifecycle"]
 
 [tool.ruff]
 line-length = 88
