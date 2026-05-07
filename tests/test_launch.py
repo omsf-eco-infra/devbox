@@ -22,6 +22,7 @@ from devbox.launch import (
     display_instance_info,
     launch_programmatic,
     main,
+    read_userdata_file,
 )
 from devbox.utils import ResourceNotFoundError, AWSClientError
 
@@ -102,6 +103,8 @@ def test_make_parser_optional_arguments():
     assert args.volume_size == 0
     assert args.base_ami is None
     assert args.param_prefix == "/devbox"
+    assert args.assign_dns is True
+    assert args.dns_subdomain is None
 
     # Test with only required arguments (instance-type and key-pair are now optional)
     args_minimal = parser.parse_args(["--project", "test-project"])
@@ -111,6 +114,8 @@ def test_make_parser_optional_arguments():
     assert args_minimal.volume_size == 0
     assert args_minimal.base_ami is None
     assert args_minimal.param_prefix == "/devbox"
+    assert args_minimal.assign_dns is True
+    assert args_minimal.dns_subdomain is None
 
 
 # Test functions for get_project_snapshot
@@ -361,6 +366,26 @@ def test_update_instance_status_new_project(mock_table):
     assert call_args["LastKeyPair"] == "test-keypair"
 
 
+def test_update_instance_status_nonexistent_without_instance_info(mock_table):
+    """Test nonexistent status works even when instance metadata is unavailable."""
+    update_instance_status(
+        mock_table,
+        "test-project",
+        "nonexistent",
+        "i-12345",
+        "ami-12345",
+        "t3.medium",
+        "test-keypair",
+        instance_info={},
+    )
+
+    mock_table.put_item.assert_called_once()
+    call_args = mock_table.put_item.call_args[1]["Item"]
+    assert call_args["project"] == "test-project"
+    assert call_args["Status"] == "RUNNING"
+    assert call_args["InstanceId"] == "i-12345"
+
+
 def test_update_instance_status_existing_project(mock_table):
     """Test updating instance status for existing project."""
     existing_item = {
@@ -399,6 +424,25 @@ def test_update_instance_status_invalid_status(mock_table):
         )
 
 
+def test_update_instance_status_sets_cname(mock_table):
+    """Test CNAMEDomain is set when provided."""
+    mock_table.get_item.return_value = {}
+
+    update_instance_status(
+        mock_table,
+        "test-project",
+        "LAUNCHING",
+        "i-12345",
+        "ami-12345",
+        "t3.medium",
+        "test-keypair",
+        cname_domain="dev.example.com",
+    )
+
+    call_args = mock_table.put_item.call_args[1]["Item"]
+    assert call_args["CNAMEDomain"] == "dev.example.com"
+
+
 # Test functions for parse_arguments
 
 
@@ -422,6 +466,22 @@ def test_parse_arguments_valid():
         assert args.instance_type == "t3.medium"
         assert args.key_pair == "test-key"
         assert args.volume_size == 100
+        assert args.assign_dns is True
+
+
+def test_parse_arguments_no_assign_dns():
+    """Test parsing the DNS opt-out flag."""
+    test_args = [
+        "--project",
+        "test-project",
+        "--no-assign-dns",
+    ]
+
+    with patch.object(sys, "argv", ["launch.py"] + test_args):
+        args = parse_arguments()
+
+        assert args.project == "test-project"
+        assert args.assign_dns is False
 
 
 def test_parse_arguments_invalid_project_name():
@@ -782,7 +842,7 @@ def test_launch_programmatic_success(
         {"State": {"Name": "running"}},
     )
 
-    launch_programmatic("test-project", instance_type="t3.medium", key_pair="test-key")
+    launch_programmatic("test-project", instance_type="t3.medium", key_pair="test-key", assign_dns=False)
 
     mock_init_aws.assert_called_once()
     mock_display.assert_called_once()
@@ -841,7 +901,7 @@ def test_launch_programmatic_uses_last_keypair(
     )
 
     # Call with key_pair=None
-    launch_programmatic("test-project", instance_type="t3.medium", key_pair=None)
+    launch_programmatic("test-project", instance_type="t3.medium", key_pair=None, assign_dns=False)
 
     # Verify launch_instance_in_azs was called with the last keypair
     mock_launch_azs.assert_called_once()
@@ -870,7 +930,7 @@ def test_launch_programmatic_no_keypair_error(
 
     # Should raise SystemExit when no keypair provided and none stored
     with pytest.raises(SystemExit) as exc_info:
-        launch_programmatic("test-project", instance_type="t3.medium", key_pair=None)
+        launch_programmatic("test-project", instance_type="t3.medium", key_pair=None, assign_dns=False)
     assert exc_info.value.code == 4
 
 
@@ -923,7 +983,7 @@ def test_launch_programmatic_uses_last_instance_type(
     )
 
     # Call with instance_type=None
-    launch_programmatic("test-project", instance_type=None, key_pair="test-keypair")
+    launch_programmatic("test-project", instance_type=None, key_pair="test-keypair", assign_dns=False)
 
     # Verify launch_instance_in_azs was called with the last instance type
     mock_launch_azs.assert_called_once()
@@ -955,7 +1015,7 @@ def test_launch_programmatic_no_instance_type_error(
 
     # Should raise SystemExit when no instance type provided and none stored
     with pytest.raises(SystemExit) as exc_info:
-        launch_programmatic("test-project", instance_type=None, key_pair="test-keypair")
+        launch_programmatic("test-project", instance_type=None, key_pair="test-keypair", assign_dns=False)
     assert exc_info.value.code == 4
 
 
@@ -1008,7 +1068,7 @@ def test_launch_programmatic_uses_both_last_values(
     )
 
     # Call with both instance_type=None and key_pair=None
-    launch_programmatic("test-project", instance_type=None, key_pair=None)
+    launch_programmatic("test-project", instance_type=None, key_pair=None, assign_dns=False)
 
     # Verify launch_instance_in_azs was called with both last values
     mock_launch_azs.assert_called_once()
@@ -1109,9 +1169,9 @@ def test_launch_programmatic_determines_username():
         "devbox.launch.get_launch_template_info"
     ) as mock_get_lt_info, patch(
         "devbox.launch.launch_instance_in_azs"
-    ) as mock_launch_azs, patch(
-        "devbox.launch.update_instance_status"
-    ) as mock_update, patch("devbox.launch.display_instance_info") as mock_display:
+    ) as mock_launch_azs, patch("devbox.launch.update_instance_status"), patch(
+        "devbox.launch.display_instance_info"
+    ):
         mock_aws = {"ec2": MagicMock(), "ec2_resource": MagicMock()}
         mock_init_aws.return_value = mock_aws
 
@@ -1147,7 +1207,7 @@ def test_launch_programmatic_determines_username():
             "Images": [{"Name": "amzn2-ami-hvm", "Description": "Amazon Linux 2"}]
         }
 
-        launch_programmatic("test-project")
+        launch_programmatic("test-project", assign_dns=False)
 
         # Verify that username was determined and stored
         mock_table.update_item.assert_called()
@@ -1176,6 +1236,9 @@ def test_main_success(mock_launch, mock_parse):
     mock_args.volume_size = 100
     mock_args.base_ami = "ami-12345"
     mock_args.param_prefix = "/test"
+    mock_args.userdata_file = None
+    mock_args.assign_dns = True
+    mock_args.dns_subdomain = None
     mock_parse.return_value = mock_args
 
     main()
@@ -1187,6 +1250,9 @@ def test_main_success(mock_launch, mock_parse):
         volume_size=100,
         base_ami="ami-12345",
         param_prefix="/test",
+        assign_dns=True,
+        dns_subdomain=None,
+        userdata_file=None,
     )
 
 
@@ -1238,3 +1304,282 @@ def test_main_general_exception(mock_launch, mock_parse):
         main()
 
     assert exc_info.value.code == 4
+
+
+# Test functions for read_userdata_file
+
+
+def test_read_userdata_file_success(tmp_path):
+    """Test successful userdata file reading."""
+    userdata_content = "#!/bin/bash\necho 'Hello World'"
+    userdata_file = tmp_path / "userdata.sh"
+    userdata_file.write_text(userdata_content)
+
+    content = read_userdata_file(str(userdata_file))
+
+    assert content is not None
+    assert isinstance(content, str)
+    assert content == userdata_content
+
+
+def test_read_userdata_file_none():
+    """Test read_userdata_file with None input."""
+    content = read_userdata_file(None)
+    assert content is None
+
+
+def test_read_userdata_file_not_found():
+    """Test read_userdata_file with non-existent file."""
+    with pytest.raises(FileNotFoundError):
+        read_userdata_file("/nonexistent/file.sh")
+
+
+# Test functions for launch_instance with userdata
+
+
+def test_launch_instance_with_userdata(mock_ec2_client, mock_ec2_resource):
+    """Test successful instance launch with userdata."""
+    mock_instance = MagicMock()
+    mock_instance.id = "i-12345"
+    mock_instance.meta.data = {"State": {"Name": "running"}}
+
+    mock_ec2_client.run_instances.return_value = {
+        "Instances": [{"InstanceId": "i-12345"}]
+    }
+    mock_ec2_resource.Instance.return_value = mock_instance
+
+    userdata_content = "#!/bin/bash\necho 'test'"
+
+    instance, instance_id, error = launch_instance(
+        mock_ec2_client,
+        mock_ec2_resource,
+        "lt-12345",
+        "ami-12345",
+        "t3.medium",
+        "test-key",
+        [{"DeviceName": "/dev/sda1", "Ebs": {"VolumeSize": 20}}],
+        "test-project",
+        "us-east-1a",
+        userdata=userdata_content,
+    )
+
+    assert instance == mock_instance
+    assert instance_id == "i-12345"
+    assert error is None
+
+    call_args = mock_ec2_client.run_instances.call_args[1]
+    assert "UserData" in call_args
+    assert call_args["UserData"] == userdata_content
+
+
+def test_launch_instance_without_userdata(mock_ec2_client, mock_ec2_resource):
+    """Test successful instance launch without userdata."""
+    mock_instance = MagicMock()
+    mock_instance.id = "i-12345"
+    mock_instance.meta.data = {"State": {"Name": "running"}}
+
+    mock_ec2_client.run_instances.return_value = {
+        "Instances": [{"InstanceId": "i-12345"}]
+    }
+    mock_ec2_resource.Instance.return_value = mock_instance
+
+    instance, instance_id, error = launch_instance(
+        mock_ec2_client,
+        mock_ec2_resource,
+        "lt-12345",
+        "ami-12345",
+        "t3.medium",
+        "test-key",
+        [{"DeviceName": "/dev/sda1", "Ebs": {"VolumeSize": 20}}],
+        "test-project",
+        "us-east-1a",
+    )
+
+    assert instance == mock_instance
+    assert instance_id == "i-12345"
+    assert error is None
+
+    call_args = mock_ec2_client.run_instances.call_args[1]
+    assert "UserData" not in call_args
+
+
+# Test functions for launch_instance_in_azs with userdata
+
+
+def test_launch_instance_in_azs_with_userdata(mock_aws_clients):
+    """Test launch_instance_in_azs with userdata parameter."""
+    lt_ids = ["lt-12345"]
+    az_info = {
+        "lt-12345": {"name": "us-east-1a", "index": "1"},
+    }
+
+    mock_instance = MagicMock()
+    mock_instance.id = "i-12345"
+    mock_instance.meta.data = {"State": {"Name": "running"}}
+    mock_aws_clients["ec2"].run_instances.return_value = {
+        "Instances": [{"InstanceId": "i-12345"}]
+    }
+    mock_aws_clients["ec2_resource"].Instance.return_value = mock_instance
+
+    userdata_content = "#!/bin/bash\necho 'test'"
+
+    instance, instance_id, instance_info = launch_instance_in_azs(
+        mock_aws_clients,
+        lt_ids,
+        az_info,
+        "ami-12345",
+        "t3.medium",
+        "test-key",
+        [],
+        "test-project",
+        userdata=userdata_content,
+    )
+
+    assert instance == mock_instance
+    assert instance_id == "i-12345"
+
+    call_args = mock_aws_clients["ec2"].run_instances.call_args[1]
+    assert "UserData" in call_args
+    assert call_args["UserData"] == userdata_content
+
+
+# Test functions for launch_programmatic with userdata file
+
+
+def test_launch_programmatic_with_userdata_file(tmp_path):
+    """Test programmatic launch with userdata file."""
+
+    userdata_content = "#!/bin/bash\necho 'Hello from userdata'"
+    userdata_file = tmp_path / "userdata.sh"
+    userdata_file.write_text(userdata_content)
+
+    with patch("devbox.launch.initialize_aws_clients") as mock_init_aws, patch(
+        "devbox.launch.get_launch_config"
+    ) as mock_get_config, patch(
+        "devbox.launch.validate_project_status"
+    ) as mock_validate, patch(
+        "devbox.launch.determine_ami"
+    ) as mock_determine_ami, patch(
+        "devbox.launch.get_volume_info"
+    ) as mock_get_vol_info, patch(
+        "devbox.launch.get_launch_template_info"
+    ) as mock_get_lt_info, patch(
+        "devbox.launch.launch_instance_in_azs"
+    ) as mock_launch_azs, patch("devbox.launch.update_instance_status"), patch(
+        "devbox.launch.display_instance_info"
+    ) as mock_display:
+        mock_aws = {"ec2": MagicMock(), "ec2_resource": MagicMock()}
+        mock_init_aws.return_value = mock_aws
+
+        mock_config = {
+            "lt_ids": ["lt-12345"],
+            "table": MagicMock(),
+            "item": {"Status": "READY"},
+        }
+        mock_get_config.return_value = mock_config
+        mock_validate.return_value = "READY"
+        mock_determine_ami.return_value = "ami-12345"
+        mock_get_vol_info.return_value = ([], 0)
+        mock_get_lt_info.return_value = {"lt-12345": {"name": "us-east-1a"}}
+
+        mock_instance = MagicMock()
+        mock_instance.meta.data = {"State": {"Name": "running"}}
+        mock_launch_azs.return_value = (
+            mock_instance,
+            "i-12345",
+            {"State": {"Name": "running"}},
+        )
+
+        launch_programmatic(
+            "test-project",
+            instance_type="t3.medium",
+            key_pair="test-key",
+            userdata_file=str(userdata_file),
+        )
+
+        mock_init_aws.assert_called_once()
+        mock_display.assert_called_once()
+
+        call_args = mock_launch_azs.call_args[1]
+        assert "userdata" in call_args
+        assert call_args["userdata"] == userdata_content
+
+
+@patch("devbox.launch.initialize_aws_clients")
+def test_launch_programmatic_invalid_userdata_file(mock_init_aws, tmp_path):
+    """Test programmatic launch with non-existent userdata file."""
+    mock_init_aws.return_value = {"ec2": MagicMock(), "ec2_resource": MagicMock()}
+
+    with pytest.raises(SystemExit) as exc_info:
+        launch_programmatic(
+            "test-project",
+            instance_type="t3.medium",
+            key_pair="test-key",
+            userdata_file="/nonexistent/userdata.sh",
+        )
+    assert exc_info.value.code == 4
+
+
+# Test functions for parse_arguments with userdata
+
+
+def test_parse_arguments_with_userdata(tmp_path):
+    """Test parsing arguments with userdata file."""
+    userdata_file = tmp_path / "userdata.sh"
+    userdata_file.write_text("#!/bin/bash")
+
+    test_args = [
+        "--project",
+        "test-project",
+        "--instance-type",
+        "t3.medium",
+        "--key-pair",
+        "test-key",
+        "--userdata-file",
+        str(userdata_file),
+    ]
+
+    with patch.object(sys, "argv", ["launch.py"] + test_args):
+        args = parse_arguments()
+
+        assert args.project == "test-project"
+        assert args.instance_type == "t3.medium"
+        assert args.key_pair == "test-key"
+        assert args.userdata_file == str(userdata_file)
+
+
+# Test functions for main with userdata
+
+
+@patch("devbox.launch.parse_arguments")
+@patch("devbox.launch.launch_programmatic")
+def test_main_with_userdata(mock_launch, mock_parse, tmp_path):
+    """Test successful main execution with userdata file."""
+    userdata_file = tmp_path / "userdata.sh"
+    userdata_file.write_text("#!/bin/bash")
+
+    mock_args = MagicMock()
+    mock_args.project = "test-project"
+    mock_args.instance_type = "t3.medium"
+    mock_args.key_pair = "test-key"
+    mock_args.volume_size = 100
+    mock_args.base_ami = "ami-12345"
+    mock_args.param_prefix = "/test"
+    mock_args.assign_dns = True
+    mock_args.dns_subdomain = None
+    mock_args.userdata_file = str(userdata_file)
+    mock_parse.return_value = mock_args
+
+    main()
+
+    mock_launch.assert_called_once_with(
+        project="test-project",
+        instance_type="t3.medium",
+        key_pair="test-key",
+        volume_size=100,
+        base_ami="ami-12345",
+        param_prefix="/test",
+        assign_dns=True,
+        dns_subdomain=None,
+        userdata_file=str(userdata_file),
+    )

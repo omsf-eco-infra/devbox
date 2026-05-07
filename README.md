@@ -65,6 +65,22 @@ flowchart LR
   class H readyPhase;
 ```
 
+### Lambda Image Build Notes
+
+The Lambda image is built with `lambdas/Dockerfile`, but the Docker build
+context must be the repository root (`.`). This is required because the image
+installs the package via `pip install .` and copies `pyproject.toml` and
+`src/` from the root.
+
+Manual equivalent:
+
+```bash
+docker build --platform linux/amd64 \
+  -f lambdas/Dockerfile \
+  -t snapshot-lambda \
+  .
+```
+
 
 
 
@@ -126,6 +142,28 @@ This is for an individual DevBox project.
 
 1. Find the initial AMI
 
+
+## CLI Usage
+
+Launch a project using the CLI:
+
+```bash
+devbox launch my-project \
+  --instance-type t3.medium \
+  --key-pair devbox-key \
+  --base-ami ami-0123456789abcdef0
+```
+
+Optionally pass cloud-init user data (shell script or `#cloud-config`) with
+`--userdata-file`:
+
+```bash
+devbox launch my-project \
+  --instance-type t3.medium \
+  --key-pair devbox-key \
+  --userdata-file ./userdata.sh
+```
+
 ## Troubleshooting
 
 ### connect to host `<ip>` port 22: Connection refused
@@ -133,3 +171,9 @@ This is for an individual DevBox project.
 Sometimes you'll get this error if you try to SSH into a DevBox immediately
 after it starts running. This is because sometimes the networking is not fully
 set up yet. Wait a few seconds and try again.
+
+### ssh: Could not resolve hostname `<project.example.com>` nodename nor servname provided, or not known
+
+This probably means that the DNS cache on your local machine has not updated yet with the new IP address for the DevBox (and should only happen if you are using DevBox with a DNS provider configured).
+
+On macOS, you can flush the DNS cache with `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`. On Ubuntu-based systems you can use `sudo resolvectl flush-caches`.

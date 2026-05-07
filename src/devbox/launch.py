@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Launch script for creating and managing devbox EC2 instances."""
+
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from typing import Dict, Any, Optional, Tuple, List, TYPE_CHECKING
 
@@ -11,21 +11,20 @@ from botocore.exceptions import ClientError
 
 # Import local modules
 from . import utils
+from .dns import DNSManager
 from .utils import (
     get_ssm_client,
     get_ec2_client,
     get_ec2_resource,
     get_dynamodb_resource,
-    get_dynamodb_table,
-    get_ssm_parameter,
     determine_ssh_username,
     ResourceNotFoundError,
-    AWSClientError
+    AWSClientError,
 )
 
 if TYPE_CHECKING:
     from mypy_boto3_ec2.client import EC2Client
-    from mypy_boto3_ec2.service_resource import EC2ServiceResource, Instance
+    from mypy_boto3_ec2.service_resource import EC2ServiceResource
     from mypy_boto3_dynamodb.service_resource import Table as DynamoDBTable
     from mypy_boto3_ssm.client import SSMClient
 
@@ -34,6 +33,27 @@ SSMClient = Any
 DynamoDBTable = Any
 EC2Client = Any
 EC2ServiceResource = Any
+
+
+def read_userdata_file(filepath: Optional[str]) -> Optional[str]:
+    """Read userdata file and return its content.
+
+    Args:
+        filepath: Path to userdata file, or None
+
+    Returns:
+        Userdata file content as string, or None if no file provided
+
+    Raises:
+        FileNotFoundError: If file doesn't exist
+        IOError: If file can't be read
+    """
+    if not filepath:
+        return None
+
+    with open(filepath, "r") as f:
+        content = f.read()
+    return content
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -47,34 +67,57 @@ def make_parser() -> argparse.ArgumentParser:
     )
 
     # Required arguments
-    required = parser.add_argument_group('required arguments')
-    required.add_argument("--project",
-                         required=True,
-                         help="Project name (alphanumeric and hyphens only)")
-
-
+    required = parser.add_argument_group("required arguments")
+    required.add_argument(
+        "--project", required=True, help="Project name (alphanumeric and hyphens only)"
+    )
 
     # Optional arguments
-    parser.add_argument("--instance-type",
-                       help="EC2 instance type (e.g., t3.medium, m5.large) (uses last instance type if not specified)")
-    parser.add_argument("--key-pair",
-                       help="Name of the EC2 Key Pair for SSH access (uses last keypair if not specified)")
-    parser.add_argument("--base-ami",
-                       help="Base AMI ID (only required for new projects)")
-    parser.add_argument("--param-prefix",
-                       default="/devbox",
-                       help="Prefix for AWS Systems Manager Parameter Store keys")
-    parser.add_argument("--volume-size",
-                       type=int,
-                       default=0,
-                       help="Minimum size (GiB) for the root EBS volume")
+    parser.add_argument(
+        "--instance-type",
+        help="EC2 instance type (e.g., t3.medium, m5.large) (uses last instance type if not specified)",
+    )
+    parser.add_argument(
+        "--key-pair",
+        help="Name of the EC2 Key Pair for SSH access (uses last keypair if not specified)",
+    )
+    parser.add_argument(
+        "--base-ami", help="Base AMI ID (only required for new projects)"
+    )
+    parser.add_argument(
+        "--param-prefix",
+        default="/devbox",
+        help="Prefix for AWS Systems Manager Parameter Store keys",
+    )
+    parser.add_argument(
+        "--volume-size",
+        type=int,
+        default=0,
+        help="Minimum size (GiB) for the root EBS volume",
+    )
+    parser.add_argument(
+        "--no-assign-dns",
+        action="store_false",
+        dest="assign_dns",
+        default=True,
+        help="Do not assign a DNS CNAME for the instance (DNS is assigned by default when configured)",
+    )
+    parser.add_argument(
+        "--dns-subdomain",
+        default=None,
+        help="Custom subdomain to use instead of the project name",
+    )
+    parser.add_argument(
+        "--userdata-file",
+        default=None,
+        help="Path to userdata script file (cloud-init format)",
+    )
 
     return parser
 
 
 def get_project_snapshot(
-    table: Any,
-    project_name: str
+    table: Any, project_name: str
 ) -> Tuple[Dict[str, Any], Optional[str]]:
     """Get the snapshot information for a project from DynamoDB.
 
@@ -105,9 +148,7 @@ def get_project_snapshot(
 
 
 def get_volume_info(
-    ec2: Any,
-    image_id: str,
-    min_volume_size: int = 0
+    ec2: Any, image_id: str, min_volume_size: int = 0
 ) -> Tuple[List[Dict[str, Any]], int]:
     """Get and validate volume information for an AMI.
 
@@ -131,7 +172,7 @@ def get_volume_info(
         raise AWSClientError(
             f"Error fetching image details for {image_id}",
             error_code=e.response.get("Error", {}).get("Code"),
-            original_exception=e
+            original_exception=e,
         )
 
     if not resp.get("Images"):
@@ -164,24 +205,23 @@ def get_volume_info(
                 largest_volume["Ebs"]["VolumeType"] = "gp3"
         else:
             print(f"Creating new volume of size {min_volume_size} GiB")
-            volumes.append({
-                "DeviceName": "/dev/sda1",
-                "Ebs": {
-                    "VolumeSize": min_volume_size,
-                    "VolumeType": "gp3",  # Using gp3 as it's the latest generation
-                    "Encrypted": True,
-                    "DeleteOnTermination": True
-                },
-            })
+            volumes.append(
+                {
+                    "DeviceName": "/dev/sda1",
+                    "Ebs": {
+                        "VolumeSize": min_volume_size,
+                        "VolumeType": "gp3",  # Using gp3 as it's the latest generation
+                        "Encrypted": True,
+                        "DeleteOnTermination": True,
+                    },
+                }
+            )
             largest_volume_size = min_volume_size
 
     return volumes, largest_volume_size if largest_volume else 0
 
 
-def get_launch_template_info(
-    ec2: Any,
-    lt_ids: List[str]
-) -> Dict[str, Dict[str, str]]:
+def get_launch_template_info(ec2: Any, lt_ids: List[str]) -> Dict[str, Dict[str, str]]:
     """Get availability zone information for launch templates.
 
     Args:
@@ -210,23 +250,25 @@ def get_launch_template_info(
                 if lt_name:
                     # Extract AZ from template name (e.g., 'devbox-us-east-1a-template' -> 'us-east-1a')
                     import re
-                    az_pattern = r'([a-z]{2}-[a-z]+-\d+[a-z])'
+
+                    az_pattern = r"([a-z]{2}-[a-z]+-\d+[a-z])"
                     match = re.search(az_pattern, lt_name)
                     if match:
                         az_name = match.group(1)
                         # Extract index from AZ suffix (a=1, b=2, etc.)
                         az_suffix = az_name[-1]
                         if az_suffix.isalpha():
-                            az_index = str(ord(az_suffix.lower()) - ord('a') + 1)
+                            az_index = str(ord(az_suffix.lower()) - ord("a") + 1)
 
             # Get subnet info from launch template
             lt_versions = ec2.describe_launch_template_versions(
-                LaunchTemplateId=lt_id,
-                Versions=["$Latest"]
+                LaunchTemplateId=lt_id, Versions=["$Latest"]
             )
 
             if lt_versions.get("LaunchTemplateVersions"):
-                lt_data = lt_versions["LaunchTemplateVersions"][0].get("LaunchTemplateData", {})
+                lt_data = lt_versions["LaunchTemplateVersions"][0].get(
+                    "LaunchTemplateData", {}
+                )
                 network_interfaces = lt_data.get("NetworkInterfaces", [])
 
                 # Try to get subnet ID from network interfaces
@@ -243,7 +285,9 @@ def get_launch_template_info(
                     try:
                         subnet_desc = ec2.describe_subnets(SubnetIds=[subnet_id])
                         if subnet_desc.get("Subnets"):
-                            az_name = subnet_desc["Subnets"][0].get("AvailabilityZone", az_name)
+                            az_name = subnet_desc["Subnets"][0].get(
+                                "AvailabilityZone", az_name
+                            )
                     except ClientError:
                         pass
 
@@ -265,6 +309,7 @@ def launch_instance(
     volumes: List[Dict[str, Any]],
     project: str,
     az_name: str,
+    userdata: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str], Optional[Exception]]:
     """Attempt to launch an EC2 instance in the specified AZ.
 
@@ -278,6 +323,7 @@ def launch_instance(
         volumes: List of volume mappings
         project: Project name for tagging
         az_name: Availability zone name for logging
+        userdata: Optional user data string (raw; SDK handles encoding)
 
     Returns:
         Tuple of (instance, instance_id, error) where:
@@ -296,47 +342,49 @@ def launch_instance(
             {"Key": "Environment", "Value": "devbox"},
             {"Key": "ManagedBy", "Value": "devbox-cli"},
             {"Key": "LaunchTemplateId", "Value": launch_template_id},
-            {"Key": "AvailabilityZone", "Value": az_name}
+            {"Key": "AvailabilityZone", "Value": az_name},
         ]
 
         # Launch the instance
-        resp = ec2.run_instances(
-            LaunchTemplate={
+        launch_params = {
+            "LaunchTemplate": {
                 "LaunchTemplateId": launch_template_id,
                 "Version": "$Latest",
             },
-            ImageId=image_id,
-            InstanceType=instance_type,
-            MinCount=1,
-            MaxCount=1,
-            KeyName=key_name,
-            BlockDeviceMappings=volumes,
-            TagSpecifications=[
-                {
-                    "ResourceType": "instance",
-                    "Tags": common_tags
-                },
+            "ImageId": image_id,
+            "InstanceType": instance_type,
+            "MinCount": 1,
+            "MaxCount": 1,
+            "KeyName": key_name,
+            "BlockDeviceMappings": volumes,
+            "TagSpecifications": [
+                {"ResourceType": "instance", "Tags": common_tags},
                 {
                     "ResourceType": "volume",
-                    "Tags": common_tags + [
+                    "Tags": common_tags
+                    + [
                         {"Key": "Application", "Value": "devbox"},
                         {"Key": "DeleteOnTermination", "Value": "true"},
-                        {"Key": "Backup", "Value": "true"}
-                    ]
+                        {"Key": "Backup", "Value": "true"},
+                    ],
                 },
-                {
-                    "ResourceType": "network-interface",
-                    "Tags": common_tags
-                }
+                {"ResourceType": "network-interface", "Tags": common_tags},
             ],
-        )
+        }
+
+        if userdata:
+            launch_params["UserData"] = userdata
+
+        resp = ec2.run_instances(**launch_params)
 
         # Get instance details from response
         instance_dct = resp["Instances"][0]
         instance_id = instance_dct["InstanceId"]
         instance = ec2_resource.Instance(instance_id)
 
-        print(f"Instance launched in {az_name}: {instance_id}. Waiting for running state...")
+        print(
+            f"Instance launched in {az_name}: {instance_id}. Waiting for running state..."
+        )
         return instance, instance_id, None
 
     except ClientError as e:
@@ -358,6 +406,7 @@ def update_instance_status(
     instance_type: str,
     key_pair: str,
     instance_info: Optional[Dict[str, Any]] = None,
+    cname_domain: Optional[str] = None,
 ) -> None:
     """Update the instance status in DynamoDB.
 
@@ -370,14 +419,17 @@ def update_instance_status(
         instance_type: EC2 instance type used for the instance
         key_pair: Name of the EC2 Key Pair used for SSH access
         instance_info: Optional instance metadata
+        cname_domain: Optional DNS subdomain label (not FQDN suffix) to persist as
+            CNAMEDomain in the project record
 
     Raises:
         ValueError: If the status is unexpected
         ClientError: If there's an error updating DynamoDB
     """
     try:
-        if status == "nonexistent" and instance_info:
+        if status == "nonexistent":
             # Create a new item for this project
+            instance_info = instance_info or {}
             item = {
                 "project": project,
                 "Status": "RUNNING",
@@ -393,8 +445,10 @@ def update_instance_status(
                 "LaunchTime": str(instance_info.get("LaunchTime", "")),
                 "LastUpdated": str(utils.get_utc_now()),
                 "State": "running",
-                "Username": ""  # Will be determined later when we have AMI info
+                "Username": "",  # Will be determined later when we have AMI info
             }
+            if cname_domain is not None:
+                item["CNAMEDomain"] = cname_domain
 
             # Add any additional instance info that might be useful
             if "State" in instance_info:
@@ -413,17 +467,23 @@ def update_instance_status(
 
             # Create item with launching status, preserving existing values
             item = existing_item.copy() if existing_item else {}
-            item.update({
-                "project": project,
-                "Status": "LAUNCHING",
-                "AMI": image_id,
-                "InstanceId": instance_id,
-                "LastInstanceType": instance_type,
-                "LastKeyPair": key_pair,
-                "LastUpdated": str(utils.get_utc_now()),
-                "State": "launching",
-                "Username": existing_item.get("Username", "")  # Preserve existing username
-            })
+            item.update(
+                {
+                    "project": project,
+                    "Status": "LAUNCHING",
+                    "AMI": image_id,
+                    "InstanceId": instance_id,
+                    "LastInstanceType": instance_type,
+                    "LastKeyPair": key_pair,
+                    "LastUpdated": str(utils.get_utc_now()),
+                    "State": "launching",
+                    "Username": existing_item.get("Username", ""),  # Preserve existing username
+                }
+            )
+            if cname_domain is not None:
+                item["CNAMEDomain"] = cname_domain
+            elif "CNAMEDomain" in existing_item:
+                item["CNAMEDomain"] = existing_item["CNAMEDomain"]
 
             # Add any additional instance info that might be useful
             if instance_info:
@@ -460,10 +520,7 @@ def update_instance_status(
                     #st = :state
             """
 
-            expr_attr_names = {
-                "#s": "Status",
-                "#st": "State"
-            }
+            expr_attr_names = {"#s": "Status", "#st": "State"}
 
             expr_attr_values = {
                 ":s": "RUNNING",
@@ -472,26 +529,31 @@ def update_instance_status(
                 ":last_instance_type": instance_type,
                 ":last_key_pair": key_pair,
                 ":now": str(utils.get_utc_now()),
-                ":state": "running"
+                ":state": "running",
             }
 
             # Add instance info if available
             if instance_info:
                 if "State" in instance_info:
-                    expr_attr_values[":state"] = instance_info["State"].get("Name", "unknown")
+                    expr_attr_values[":state"] = instance_info["State"].get(
+                        "Name", "unknown"
+                    )
                 if "PrivateIpAddress" in instance_info:
                     update_expr += ", PrivateIp = :private_ip"
                     expr_attr_values[":private_ip"] = instance_info["PrivateIpAddress"]
                 if "PublicIpAddress" in instance_info:
                     update_expr += ", PublicIp = :public_ip"
                     expr_attr_values[":public_ip"] = instance_info["PublicIpAddress"]
+            if cname_domain is not None:
+                update_expr += ", CNAMEDomain = :cname_domain"
+                expr_attr_values[":cname_domain"] = cname_domain
 
             table.update_item(
                 Key={"project": project},
                 UpdateExpression=update_expr,
                 ExpressionAttributeNames=expr_attr_names,
                 ExpressionAttributeValues=expr_attr_values,
-                ReturnValues="UPDATED_NEW"
+                ReturnValues="UPDATED_NEW",
             )
         else:
             raise ValueError(
@@ -518,7 +580,7 @@ def parse_arguments() -> argparse.Namespace:
     args = parser.parse_args()
 
     # Validate arguments
-    if not args.project.replace('-', '').isalnum():
+    if not args.project.replace("-", "").isalnum():
         parser.error("Project name must be alphanumeric with optional hyphens")
     if args.volume_size < 0:
         parser.error("Volume size must be a non-negative number")
@@ -546,7 +608,9 @@ def initialize_aws_clients() -> Dict[str, Any]:
         raise AWSClientError("Failed to initialize AWS clients") from e
 
 
-def get_launch_config(aws: Dict[str, Any], param_prefix: str, project: str) -> Dict[str, Any]:
+def get_launch_config(
+    aws: Dict[str, Any], param_prefix: str, project: str
+) -> Dict[str, Any]:
     """Get launch configuration including launch templates and project info.
 
     Args:
@@ -565,12 +629,17 @@ def get_launch_config(aws: Dict[str, Any], param_prefix: str, project: str) -> D
         # Get launch template IDs from SSM
         lt_param = f"{param_prefix}/launchTemplateIds"
         try:
-            lt_resp = aws["ssm"].get_parameter(Name=lt_param, WithDecryption=True)["Parameter"]["Value"]
+            lt_resp = aws["ssm"].get_parameter(Name=lt_param, WithDecryption=True)[
+                "Parameter"
+            ]["Value"]
         except Exception as e:
-            raise AWSClientError(f"Failed to retrieve SSM parameter {lt_param}: {str(e)}")
+            raise AWSClientError(
+                f"Failed to retrieve SSM parameter {lt_param}: {str(e)}"
+            )
 
         # Parse JSON to get launch template dictionary
         import json
+
         try:
             lt_dict = json.loads(lt_resp)
         except json.JSONDecodeError as e:
@@ -583,17 +652,25 @@ def get_launch_config(aws: Dict[str, Any], param_prefix: str, project: str) -> D
             # Handle current list format from terraform
             lt_ids = lt_dict
         else:
-            raise AWSClientError(f"Expected list or dictionary in SSM parameter {lt_param}, got {type(lt_dict)}")
+            raise AWSClientError(
+                f"Expected list or dictionary in SSM parameter {lt_param}, got {type(lt_dict)}"
+            )
 
         if not lt_ids:
-            raise ResourceNotFoundError(f"No launch templates found in SSM parameter {lt_param}. Parameter contains: {lt_dict}")
+            raise ResourceNotFoundError(
+                f"No launch templates found in SSM parameter {lt_param}. Parameter contains: {lt_dict}"
+            )
 
         # Get DynamoDB table name from SSM
         table_param = f"{param_prefix}/snapshotTable"
         try:
-            table_name = aws["ssm"].get_parameter(Name=table_param, WithDecryption=True)["Parameter"]["Value"]
+            table_name = aws["ssm"].get_parameter(
+                Name=table_param, WithDecryption=True
+            )["Parameter"]["Value"]
         except Exception as e:
-            raise AWSClientError(f"Failed to retrieve SSM parameter {table_param}: {str(e)}")
+            raise AWSClientError(
+                f"Failed to retrieve SSM parameter {table_param}: {str(e)}"
+            )
 
         table = aws["ddb"].Table(table_name)
 
@@ -602,11 +679,7 @@ def get_launch_config(aws: Dict[str, Any], param_prefix: str, project: str) -> D
         if error:
             raise ResourceNotFoundError(f"Error getting project snapshot: {error}")
 
-        return {
-            "lt_ids": lt_ids,
-            "table": table,
-            "item": item
-        }
+        return {"lt_ids": lt_ids, "table": table, "item": item}
 
     except (ResourceNotFoundError, AWSClientError):
         # Re-raise our custom exceptions without wrapping
@@ -684,7 +757,8 @@ def launch_instance_in_azs(
     instance_type: str,
     key_name: str,
     volumes: List[Dict[str, Any]],
-    project: str
+    project: str,
+    userdata: Optional[str] = None,
 ) -> Tuple[Any, str, Dict[str, Any]]:
     """Attempt to launch an instance in any of the specified AZs.
 
@@ -697,6 +771,7 @@ def launch_instance_in_azs(
         key_name: Name of the key pair for SSH access
         volumes: List of volume mappings
         project: Project name for tagging
+        userdata: Optional user data string (raw; SDK handles encoding)
 
     Returns:
         Tuple of (instance, instance_id, instance_info) on success
@@ -719,6 +794,7 @@ def launch_instance_in_azs(
                 volumes=volumes,
                 project=project,
                 az_name=az_name,
+                userdata=userdata,
             )
 
             if instance and instance_id:
@@ -750,22 +826,24 @@ def display_instance_info(ec2: Any, instance_id: str, project: str, table: Any) 
         desc = ec2.describe_instances(InstanceIds=[instance_id])
         instance = desc["Reservations"][0]["Instances"][0]
 
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print("Instance Launched Successfully")
-        print("="*50)
+        print("=" * 50)
 
         print(f"\n{'Instance ID:':<20} {instance_id}")
         print(f"{'State:':<20} {instance.get('State', {}).get('Name', 'unknown')}")
         print(f"{'Type:':<20} {instance.get('InstanceType', 'unknown')}")
         print(f"{'AMI:':<20} {instance.get('ImageId', 'unknown')}")
 
-        if 'Placement' in instance:
-            print(f"\n{'Availability Zone:':<20} {instance['Placement'].get('AvailabilityZone', 'unknown')}")
+        if "Placement" in instance:
+            print(
+                f"\n{'Availability Zone:':<20} {instance['Placement'].get('AvailabilityZone', 'unknown')}"
+            )
 
-        if 'PrivateIpAddress' in instance:
+        if "PrivateIpAddress" in instance:
             print(f"{'Private IP:':<20} {instance['PrivateIpAddress']}")
 
-        public_ip = instance.get('PublicIpAddress')
+        public_ip = instance.get("PublicIpAddress")
         if public_ip:
             print(f"{'Public IP:':<20} {public_ip}")
 
@@ -787,17 +865,21 @@ def display_instance_info(ec2: Any, instance_id: str, project: str, table: Any) 
                                     ami = ami_resp["Images"][0]
                                     ami_name = ami.get("Name", "")
                                     ami_description = ami.get("Description", "")
-                                    determined_username = determine_ssh_username(ami_name, ami_description)
+                                    determined_username = determine_ssh_username(
+                                        ami_name, ami_description
+                                    )
                                     if determined_username:
                                         username = determined_username
                                         # Update DynamoDB with determined username
                                         table.update_item(
                                             Key={"project": project},
                                             UpdateExpression="SET Username = :u",
-                                            ExpressionAttributeValues={":u": username}
+                                            ExpressionAttributeValues={":u": username},
                                         )
                                     else:
-                                        username = "<username>"  # placeholder for unknown
+                                        username = (
+                                            "<username>"  # placeholder for unknown
+                                        )
                             except Exception:
                                 username = "<username>"
                         else:
@@ -813,7 +895,7 @@ def display_instance_info(ec2: Any, instance_id: str, project: str, table: Any) 
                 print("Note: Replace <username> with the appropriate user for your AMI")
                 print("      (common values: ec2-user, ubuntu, admin, centos, etc.)")
 
-        print("\n" + "="*50 + "\n")
+        print("\n" + "=" * 50 + "\n")
 
     except Exception as e:
         print(f"\nWarning: Could not get instance details: {str(e)}")
@@ -825,7 +907,10 @@ def launch_programmatic(
     key_pair: Optional[str] = None,
     volume_size: int = 0,
     base_ami: Optional[str] = None,
-    param_prefix: str = "/devbox"
+    param_prefix: str = "/devbox",
+    userdata_file: Optional[str] = None,
+    assign_dns: bool = True,
+    dns_subdomain: Optional[str] = None,
 ) -> None:
     """Launch a devbox instance programmatically.
 
@@ -836,13 +921,21 @@ def launch_programmatic(
         volume_size: Minimum size (GiB) for the root EBS volume
         base_ami: Base AMI ID (only required for new projects)
         param_prefix: Prefix for AWS Systems Manager Parameter Store keys
+        userdata_file: Optional path to userdata script file (cloud-init format)
+        assign_dns: Whether to assign a DNS CNAME for the instance
+        dns_subdomain: Optional custom subdomain to override the project name
     """
     try:
         # Validate project name
-        if not project.replace('-', '').isalnum():
+        if not project.replace("-", "").isalnum():
             raise ValueError("Project name must be alphanumeric with optional hyphens")
         if volume_size < 0:
             raise ValueError("Volume size must be a non-negative number")
+
+        # Read userdata file if provided
+        userdata = read_userdata_file(userdata_file)
+        if userdata_file:
+            print(f"Using userdata from file: {userdata_file}")
 
         # Initialize AWS clients
         aws = initialize_aws_clients()
@@ -860,7 +953,9 @@ def launch_programmatic(
                 instance_type = last_instance_type
                 print(f"Using last instance type: {instance_type}")
             else:
-                raise ValueError("No instance type specified and no previous instance type found for this project")
+                raise ValueError(
+                    "No instance type specified and no previous instance type found for this project"
+                )
         else:
             print(f"Using specified instance type: {instance_type}")
 
@@ -871,7 +966,9 @@ def launch_programmatic(
                 key_pair = last_key_pair
                 print(f"Using last keypair: {key_pair}")
             else:
-                raise ValueError("No key pair specified and no previous keypair found for this project")
+                raise ValueError(
+                    "No key pair specified and no previous keypair found for this project"
+                )
         else:
             print(f"Using specified keypair: {key_pair}")
 
@@ -895,13 +992,60 @@ def launch_programmatic(
             instance_type=instance_type,
             key_name=key_pair,
             volumes=volumes,
-            project=project
+            project=project,
+            userdata=userdata,
         )
 
         # Wait for instance to be running
         print("Waiting for instance to be ready...")
         instance.wait_until_running()
         instance.reload()  # Refresh instance attributes
+
+        # Assign DNS if configured and requested
+        cname_domain = config["item"].get("CNAMEDomain")
+        if assign_dns:
+            try:
+                if not instance.public_dns_name:
+                    print("Instance does not have a public DNS name; skipping DNS assignment")
+                else:
+                    dns_manager = DNSManager.from_ssm(
+                        param_prefix=param_prefix,
+                        ssm_client=aws["ssm"],
+                    )
+                    if dns_manager.provider is None:
+                        print("DNS not configured; skipping CNAME assignment")
+                    else:
+                        preferred_subdomain = dns_subdomain
+                        if dns_subdomain is None and cname_domain:
+                            preferred_subdomain = dns_manager.normalize_subdomain(cname_domain)
+                            if preferred_subdomain is None:
+                                print(
+                                    f"Stored DNS value '{cname_domain}' is not a valid subdomain label; "
+                                    "falling back to project-derived subdomain"
+                                )
+
+                        if preferred_subdomain is None:
+                            resolved_subdomain = dns_manager.sanitize_dns_name(project)
+                        else:
+                            resolved_subdomain = dns_manager.sanitize_dns_name(preferred_subdomain)
+
+                        ensured_domain = dns_manager.assign_cname(
+                            subdomain=resolved_subdomain,
+                            instance_public_dns=instance.public_dns_name,
+                        )
+                        if ensured_domain:
+                            # Persist only the subdomain preference (not the FQDN suffix).
+                            cname_domain = resolved_subdomain
+                            print(f"Ensured DNS CNAME: {ensured_domain}")
+                        else:
+                            print("DNS assignment skipped (provider not available)")
+            except Exception as e:
+                print(f"Warning: DNS assignment failed: {e}")
+        else:
+            if cname_domain:
+                print("DNS assignment disabled; existing DNS entry preserved")
+            else:
+                print("DNS assignment disabled; no DNS record created")
 
         # Determine and update SSH username if not already set
         try:
@@ -915,13 +1059,15 @@ def launch_programmatic(
                         ami = ami_resp["Images"][0]
                         ami_name = ami.get("Name", "")
                         ami_description = ami.get("Description", "")
-                        determined_username = determine_ssh_username(ami_name, ami_description)
+                        determined_username = determine_ssh_username(
+                            ami_name, ami_description
+                        )
                         if determined_username:
                             print(f"Determined SSH username: {determined_username}")
                             config["table"].update_item(
                                 Key={"project": project},
                                 UpdateExpression="SET Username = :u",
-                                ExpressionAttributeValues={":u": determined_username}
+                                ExpressionAttributeValues={":u": determined_username},
                             )
         except Exception as e:
             print(f"Warning: Could not determine SSH username: {e}")
@@ -936,6 +1082,7 @@ def launch_programmatic(
             instance_type=instance_type,
             key_pair=key_pair,
             instance_info=instance_info,
+            cname_domain=cname_domain,
         )
 
         # Display instance information
@@ -949,7 +1096,7 @@ def launch_programmatic(
         sys.exit(2)
     except AWSClientError as e:
         print(f"AWS Error: {str(e)}", file=sys.stderr)
-        if hasattr(e, 'error_code'):
+        if hasattr(e, "error_code"):
             print(f"Error Code: {e.error_code}", file=sys.stderr)
         sys.exit(3)
     except Exception as e:
@@ -974,7 +1121,10 @@ def main() -> None:
             key_pair=args.key_pair,
             volume_size=args.volume_size,
             base_ami=args.base_ami,
-            param_prefix=args.param_prefix
+            param_prefix=args.param_prefix,
+            userdata_file=args.userdata_file,
+            assign_dns=args.assign_dns,
+            dns_subdomain=args.dns_subdomain,
         )
 
     except KeyboardInterrupt:
@@ -985,7 +1135,7 @@ def main() -> None:
         sys.exit(2)
     except AWSClientError as e:
         print(f"AWS Error: {str(e)}", file=sys.stderr)
-        if hasattr(e, 'error_code'):
+        if hasattr(e, "error_code"):
             print(f"Error Code: {e.error_code}", file=sys.stderr)
         sys.exit(3)
     except Exception as e:
