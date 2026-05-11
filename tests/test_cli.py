@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import MagicMock, patch, call
 from click.testing import CliRunner
 
-from devbox.cli import cli, status, terminate, launch, delete_project, main
+from devbox.cli import cli, status, terminate, launch, delete_project, new as new_command, main
 from devbox.utils import AWSClientError
 
 
@@ -15,6 +15,7 @@ def test_cli_help():
     assert result.exit_code == 0
     assert "DevBox - AWS EC2 Development Environment Manager" in result.output
     assert "launch" in result.output
+    assert "new" in result.output
     assert "status" in result.output
     assert "terminate" in result.output
 
@@ -804,6 +805,125 @@ class TestDeleteProjectCommand:
         mock_manager_class.assert_called_once_with(prefix="custom/devbox")
         mock_manager.delete_ami_and_snapshots.assert_not_called()
         mock_manager.delete_project_entry.assert_called_once_with("demo")
+
+
+class TestNewCommand:
+    def setup_method(self):
+        self.runner = CliRunner()
+
+    def test_new_help(self):
+        result = self.runner.invoke(new_command, ["--help"])
+
+        assert result.exit_code == 0
+        assert "Create a new DevBox project without launching an instance" in result.output
+        assert "PROJECT" in result.output
+        assert "--base-ami" in result.output
+        assert "--instance-type" in result.output
+        assert "--key-pair" in result.output
+        assert "--param-prefix" in result.output
+
+    @patch("devbox.new.new_project_programmatic")
+    @patch("devbox.cli.ConsoleOutput")
+    def test_new_success(self, mock_console_class, mock_new):
+        mock_console = MagicMock()
+        mock_console_class.return_value = mock_console
+
+        result = self.runner.invoke(
+            cli, ["new", "test-project", "--base-ami", "ami-12345678"]
+        )
+
+        assert result.exit_code == 0
+        mock_new.assert_called_once_with(
+            project="test-project",
+            base_ami="ami-12345678",
+            instance_type=None,
+            key_pair=None,
+            param_prefix="/devbox",
+        )
+
+    @patch("devbox.new.new_project_programmatic")
+    @patch("devbox.cli.ConsoleOutput")
+    def test_new_with_custom_param_prefix(self, mock_console_class, mock_new):
+        mock_console = MagicMock()
+        mock_console_class.return_value = mock_console
+
+        result = self.runner.invoke(
+            cli,
+            [
+                "new",
+                "my-project",
+                "--base-ami",
+                "ami-0abcdef1234567890",
+                "--param-prefix",
+                "/my-devbox",
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_new.assert_called_once_with(
+            project="my-project",
+            base_ami="ami-0abcdef1234567890",
+            instance_type=None,
+            key_pair=None,
+            param_prefix="/my-devbox",
+        )
+
+    @patch("devbox.new.new_project_programmatic")
+    @patch("devbox.cli.ConsoleOutput")
+    def test_new_with_instance_type_and_key_pair(self, mock_console_class, mock_new):
+        mock_console = MagicMock()
+        mock_console_class.return_value = mock_console
+
+        result = self.runner.invoke(
+            cli,
+            [
+                "new",
+                "my-project",
+                "--base-ami",
+                "ami-0abcdef1234567890",
+                "--instance-type",
+                "m5.large",
+                "--key-pair",
+                "my-key",
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_new.assert_called_once_with(
+            project="my-project",
+            base_ami="ami-0abcdef1234567890",
+            instance_type="m5.large",
+            key_pair="my-key",
+            param_prefix="/devbox",
+        )
+
+    @patch("devbox.new.new_project_programmatic")
+    @patch("devbox.cli.ConsoleOutput")
+    def test_new_exception(self, mock_console_class, mock_new):
+        mock_console = MagicMock()
+        mock_console_class.return_value = mock_console
+        mock_new.side_effect = Exception("Project creation failed")
+
+        result = self.runner.invoke(
+            cli, ["new", "test-project", "--base-ami", "ami-12345678"]
+        )
+
+        assert result.exit_code == 1
+        mock_console.print_error.assert_called_once()
+        error_call = mock_console.print_error.call_args[0][0]
+        assert "Failed to create project" in error_call
+
+    def test_new_missing_base_ami(self):
+        result = self.runner.invoke(cli, ["new", "test-project"])
+
+        assert result.exit_code == 2
+        assert "Missing option '--base-ami'" in result.output
+
+    def test_new_missing_project(self):
+        result = self.runner.invoke(cli, ["new", "--base-ami", "ami-12345678"])
+
+        assert result.exit_code == 2
+        assert "Missing argument 'PROJECT'" in result.output
 
 
 @patch("devbox.cli.cli")
