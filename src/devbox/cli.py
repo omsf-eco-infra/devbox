@@ -7,8 +7,6 @@ import sys
 import click
 from typing import Optional
 
-from .remote_client import normalize_param_prefix
-from .commands.status import run_status_command
 from .devbox_manager import DevBoxManager
 from .console_output import ConsoleOutput
 
@@ -102,13 +100,19 @@ def status(
     Otherwise, show all resources.
     """
     console = ctx.obj["console"]
+    manager = get_manager(console, param_prefix)
 
     try:
-        run_status_command(
-            project=project,
-            param_prefix=param_prefix,
-            console=console,
-        )
+        # List instances, volumes, and snapshots
+        instances = manager.list_instances(project, console)
+        volumes = manager.list_volumes(project, console)
+        snapshots = manager.list_snapshots(project, console)
+
+        # Display the results using console methods
+        console.print_instances(instances)
+        console.print_volumes(volumes)
+        console.print_snapshots(snapshots)
+
     except Exception as e:
         console.print_error(f"Failed to retrieve status: {str(e)}")
         sys.exit(1)
@@ -286,7 +290,7 @@ def delete_project(ctx, project: str, force: bool, param_prefix: str):
 
 
 def main():
-    """Run the Click CLI entry point."""
+    """Entry point for the CLI."""
     cli(obj={})
 
 
