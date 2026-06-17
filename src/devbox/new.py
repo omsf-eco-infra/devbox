@@ -12,9 +12,8 @@ from typing import Dict, Any, Optional, TYPE_CHECKING
 
 from botocore.exceptions import ClientError
 
-from .remote_client import normalize_param_prefix
 from . import utils
-from .utils import ResourceNotFoundError, AWSClientError
+from .utils import AWSClientError, ResourceNotFoundError, normalize_param_prefix
 
 if TYPE_CHECKING:
     from mypy_boto3_ec2.client import EC2Client

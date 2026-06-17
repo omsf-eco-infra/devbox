@@ -9,6 +9,7 @@ from typing import Optional
 
 from .devbox_manager import DevBoxManager
 from .console_output import ConsoleOutput
+from .utils import normalize_param_prefix
 
 DEFAULT_PARAM_PREFIX = "/devbox"
 PARAM_PREFIX_ENV_VAR = "DEVBOX_PARAM_PREFIX"

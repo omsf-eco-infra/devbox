@@ -112,6 +112,26 @@ def get_image(
     return images[0]
 
 
+def normalize_param_prefix(param_prefix: str) -> str:
+    """Normalize a parameter prefix into ``/name`` form.
+
+    Args:
+        param_prefix: Raw parameter prefix supplied by the caller
+
+    Returns:
+        Normalized prefix beginning with a single slash
+
+    Raises:
+        ValueError: If the prefix contains empty path segments
+    """
+    stripped = param_prefix.strip("/")
+    if not stripped:
+        return "/devbox"
+    if "//" in stripped:
+        raise ValueError("Parameter prefix cannot contain consecutive slashes")
+    return f"/{stripped}"
+
+
 def get_project_tag(tags: List[Dict[str, str]]) -> str:
     """Extract the Project tag value from a list of tags.
 
