@@ -13,7 +13,7 @@ locals {
     for relpath in sort(local.lambda_source_files) : filesha256("${local.repo_root}/${relpath}")
   ]))
   # Keep one statement per CLI action with the full permission set that action needs.
-  command_policy_statements = [
+  command_policy_statements = concat([
     {
       sid = "StatusCmdPermissions"
       actions = [
@@ -31,8 +31,52 @@ locals {
         "ec2:TerminateInstances"
       ]
       resources = ["*"]
+    },
+    {
+      sid = "LaunchCmdEc2Permissions"
+      actions = [
+        "ec2:CreateTags",
+        "ec2:DescribeImages",
+        "ec2:DescribeInstances",
+        "ec2:DescribeLaunchTemplates",
+        "ec2:DescribeLaunchTemplateVersions",
+        "ec2:DescribeSubnets",
+        "ec2:RunInstances"
+      ]
+      resources = ["*"]
+    },
+    {
+      sid       = "LaunchCmdSsmPermissions"
+      actions   = ["ssm:GetParameter"]
+      resources = ["arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/${trim(var.param_prefix, "/")}/*"]
+    },
+    {
+      sid = "LaunchCmdDynamoDbPermissions"
+      actions = [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem"
+      ]
+      resources = [var.snapshot_table_arn]
+    },
+    {
+      sid       = "LaunchCmdPassRolePermissions"
+      actions   = ["iam:PassRole"]
+      resources = [var.ec2_instance_role_arn]
     }
-  ]
+    ],
+    var.dns_provider == "route53" ? [
+      {
+        sid = "LaunchCmdRoute53Permissions"
+        actions = [
+          "route53:ChangeResourceRecordSets",
+          "route53:ListHostedZonesByName",
+          "route53:ListResourceRecordSets"
+        ]
+        resources = ["*"]
+      }
+    ] : []
+  )
 }
 
 resource "aws_ecr_repository" "cli" {
@@ -126,13 +170,14 @@ resource "aws_lambda_function" "cli" {
   package_type  = "Image"
   image_uri     = local.image_uri
   role          = aws_iam_role.lambda_role.arn
-  timeout       = 30
+  timeout       = 900
   memory_size   = 256
 
   environment {
     variables = {
       AWS_LWA_INVOKE_MODE          = "response_stream"
       AWS_LWA_READINESS_CHECK_PATH = "/healthz"
+      DEVBOX_PARAM_PREFIX          = var.param_prefix
       PORT                         = "8080"
     }
   }

@@ -29,6 +29,10 @@ class RemoteInvocationError(utils.DevBoxError):
     """Error raised when a remote CLI Lambda invocation fails."""
 
 
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
+DEFAULT_READ_TIMEOUT_SECONDS = 30
+
+
 def normalize_param_prefix(param_prefix: str) -> str:
     """Normalize a parameter prefix for CLI Lambda discovery.
 
@@ -270,6 +274,7 @@ def invoke_action(
     payload: dict[str, Any],
     param_prefix: str,
     console: Any | None = None,
+    read_timeout: float = DEFAULT_READ_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Invoke a CLI Lambda action and return the result payload.
 
@@ -283,6 +288,8 @@ def invoke_action(
         Parameter prefix used to discover the Function URL.
     console : Any | None, optional
         Console-like object used to surface streamed warnings.
+    read_timeout : float, optional
+        Maximum seconds to wait between response bytes after connecting.
 
     Returns
     -------
@@ -307,7 +314,7 @@ def invoke_action(
             data=body,
             headers=headers,
             stream=True,
-            timeout=30,
+            timeout=(DEFAULT_CONNECT_TIMEOUT_SECONDS, read_timeout),
         )
     except RequestException as exc:
         raise RemoteInvocationError(
@@ -335,6 +342,10 @@ def invoke_action(
                 )
 
             event_type = event["type"]
+            if event_type == CliEventType.PROGRESS.value and console is not None:
+                console.print_progress(event["message"])
+                continue
+
             if event_type == CliEventType.WARNING.value and console is not None:
                 console.print_warning(event["message"])
                 continue

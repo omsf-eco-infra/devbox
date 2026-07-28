@@ -32,7 +32,7 @@ def test_dispatch_action_routes_supported_actions(action: CliAction) -> None:
     handler = MagicMock(return_value=[{"type": "success"}])
 
     with patch.dict(ACTION_HANDLERS, {action: handler}, clear=True):
-        result = dispatch_action(envelope)
+        result = list(dispatch_action(envelope))
 
     assert result == [{"type": "success"}]
     handler.assert_called_once_with(envelope)
@@ -53,7 +53,7 @@ def test_execute_action_maps_handler_failures_to_terminal_error(
     handler = MagicMock(side_effect=RuntimeError("boom"))
 
     with patch.dict(ACTION_HANDLERS, {action: handler}, clear=True):
-        events = execute_action(envelope)
+        events = list(execute_action(envelope))
 
     assert events == [
         {
@@ -62,4 +62,20 @@ def test_execute_action_maps_handler_failures_to_terminal_error(
             "message": "boom",
             "data": {},
         }
+    ]
+
+
+def test_execute_action_maps_iteration_failures_to_terminal_error() -> None:
+    envelope = make_envelope(action=CliAction.STATUS)
+
+    def handler(_envelope):
+        yield {"type": "progress", "action": "status", "message": "started", "data": {}}
+        raise RuntimeError("stream failed")
+
+    with patch.dict(ACTION_HANDLERS, {CliAction.STATUS: handler}, clear=True):
+        events = list(execute_action(envelope))
+
+    assert events == [
+        {"type": "progress", "action": "status", "message": "started", "data": {}},
+        {"type": "error", "action": "status", "message": "stream failed", "data": {}},
     ]

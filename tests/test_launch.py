@@ -225,14 +225,75 @@ def test_get_volume_info_with_min_size(mock_ec2_client):
         ]
     }
     mock_ec2_client.describe_images.return_value = mock_response
+    progress = []
 
     volumes, largest_size = get_volume_info(
-        mock_ec2_client, "ami-12345", min_volume_size=100
+        mock_ec2_client,
+        "ami-12345",
+        min_volume_size=100,
+        on_progress=progress.append,
     )
 
     assert len(volumes) == 1
     assert largest_size == 100  # Should be adjusted to minimum
     assert volumes[0]["Ebs"]["VolumeSize"] == 100
+    assert progress == ["Increasing volume size from 20 GiB to 100 GiB"]
+
+
+def test_get_volume_info_creates_volume_with_progress(mock_ec2_client):
+    """Test creation of a volume when the AMI has no EBS mapping."""
+    mock_ec2_client.describe_images.return_value = {
+        "Images": [{"BlockDeviceMappings": []}]
+    }
+    progress = []
+
+    volumes, largest_size = get_volume_info(
+        mock_ec2_client,
+        "ami-12345",
+        min_volume_size=50,
+        on_progress=progress.append,
+    )
+
+    assert volumes == [
+        {
+            "DeviceName": "/dev/sda1",
+            "Ebs": {
+                "VolumeSize": 50,
+                "VolumeType": "gp3",
+                "Encrypted": True,
+                "DeleteOnTermination": True,
+            },
+        }
+    ]
+    assert largest_size == 50
+    assert progress == ["Creating new volume of size 50 GiB"]
+
+
+def test_get_volume_info_without_adjustment_emits_no_progress(mock_ec2_client):
+    """Test an already-large volume does not produce adjustment progress."""
+    mock_ec2_client.describe_images.return_value = {
+        "Images": [
+            {
+                "BlockDeviceMappings": [
+                    {
+                        "DeviceName": "/dev/sda1",
+                        "Ebs": {"VolumeSize": 100, "VolumeType": "gp3"},
+                    }
+                ]
+            }
+        ]
+    }
+    progress = []
+
+    _, largest_size = get_volume_info(
+        mock_ec2_client,
+        "ami-12345",
+        min_volume_size=50,
+        on_progress=progress.append,
+    )
+
+    assert largest_size == 100
+    assert progress == []
 
 
 def test_get_volume_info_no_image(mock_ec2_client):
@@ -283,6 +344,87 @@ def test_get_launch_template_info_with_errors(mock_ec2_client):
 
     assert "lt-12345" in az_info
     assert "name" in az_info["lt-12345"]
+
+
+def test_get_launch_template_info_warns_on_template_lookup_failure(
+    mock_ec2_client,
+):
+    """Test template lookup errors warn while retaining the generic AZ label."""
+    mock_ec2_client.describe_launch_templates.side_effect = ClientError(
+        {
+            "Error": {
+                "Code": "UnauthorizedOperation",
+                "Message": "not allowed to inspect template",
+            }
+        },
+        "DescribeLaunchTemplates",
+    )
+    warnings = []
+
+    az_info = get_launch_template_info(
+        mock_ec2_client, ["lt-12345"], on_warning=warnings.append
+    )
+
+    assert az_info["lt-12345"] == {"name": "az-1", "index": "1"}
+    assert warnings == [
+        "Unable to inspect launch template lt-12345: UnauthorizedOperation: "
+        "not allowed to inspect template; using fallback availability-zone "
+        "label az-1"
+    ]
+
+
+def test_get_launch_template_info_warns_on_subnet_lookup_failure(mock_ec2_client):
+    """Test subnet errors warn while retaining the AZ parsed from the template."""
+    mock_ec2_client.describe_launch_templates.return_value = {
+        "LaunchTemplates": [{"LaunchTemplateName": "devbox-us-east-1b-template"}]
+    }
+    mock_ec2_client.describe_launch_template_versions.return_value = {
+        "LaunchTemplateVersions": [
+            {
+                "LaunchTemplateData": {
+                    "NetworkInterfaces": [{"SubnetId": "subnet-12345"}]
+                }
+            }
+        ]
+    }
+    mock_ec2_client.describe_subnets.side_effect = ClientError(
+        {
+            "Error": {
+                "Code": "InvalidSubnetID.NotFound",
+                "Message": "subnet is not visible",
+            }
+        },
+        "DescribeSubnets",
+    )
+    warnings = []
+
+    az_info = get_launch_template_info(
+        mock_ec2_client, ["lt-12345"], on_warning=warnings.append
+    )
+
+    assert az_info["lt-12345"] == {"name": "us-east-1b", "index": "2"}
+    assert warnings == [
+        "Unable to inspect subnet subnet-12345 for launch template lt-12345: "
+        "InvalidSubnetID.NotFound: subnet is not visible; using "
+        "availability-zone label us-east-1b"
+    ]
+
+
+def test_get_launch_template_info_logs_warning_without_callback(
+    mock_ec2_client, caplog
+):
+    """Test best-effort metadata failures are never silently discarded."""
+    mock_ec2_client.describe_launch_templates.side_effect = ClientError(
+        {"Error": {"Code": "RequestLimitExceeded", "Message": "try later"}},
+        "DescribeLaunchTemplates",
+    )
+
+    get_launch_template_info(mock_ec2_client, ["lt-12345"])
+
+    assert (
+        "Unable to inspect launch template lt-12345: RequestLimitExceeded: "
+        "try later; using fallback availability-zone label az-1" in caplog.text
+    )
 
 
 # Test functions for launch_instance

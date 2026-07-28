@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
-from typing import Dict, Any, Optional, Tuple, List, TYPE_CHECKING
+import time
+from dataclasses import asdict, dataclass
+from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, TYPE_CHECKING, Tuple
 
 from botocore.exceptions import ClientError
 
@@ -33,6 +36,8 @@ SSMClient = Any
 DynamoDBTable = Any
 EC2Client = Any
 EC2ServiceResource = Any
+
+LOGGER = logging.getLogger(__name__)
 
 
 def read_userdata_file(filepath: Optional[str]) -> Optional[str]:
@@ -148,7 +153,11 @@ def get_project_snapshot(
 
 
 def get_volume_info(
-    ec2: Any, image_id: str, min_volume_size: int = 0
+    ec2: Any,
+    image_id: str,
+    min_volume_size: int = 0,
+    *,
+    on_progress: Optional[Callable[[str], None]] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """Get and validate volume information for an AMI.
 
@@ -156,6 +165,7 @@ def get_volume_info(
         ec2: EC2 client
         image_id: ID of the AMI to get volume info for
         min_volume_size: Minimum size (GiB) for the largest volume
+        on_progress: Optional callback for volume-adjustment progress
 
     Returns:
         Tuple of (volumes, largest_volume_size) where:
@@ -193,16 +203,17 @@ def get_volume_info(
     # Update volumes if needed
     if min_volume_size > 0 and largest_volume_size < min_volume_size:
         if largest_volume:
-            print(
-                f"Increasing volume size from {largest_volume_size} GiB to {min_volume_size} GiB"
-            )
+            if on_progress is not None:
+                on_progress(
+                    f"Increasing volume size from {largest_volume_size} GiB "
+                    f"to {min_volume_size} GiB"
+                )
             largest_volume["Ebs"]["VolumeSize"] = min_volume_size
             largest_volume_size = min_volume_size
             # Ensure volume type is set to a modern type
             if "VolumeType" not in largest_volume["Ebs"]:
                 largest_volume["Ebs"]["VolumeType"] = "gp3"
         else:
-            print(f"Creating new volume of size {min_volume_size} GiB")
             volumes.append(
                 {
                     "DeviceName": "/dev/sda1",
@@ -214,17 +225,43 @@ def get_volume_info(
                     },
                 }
             )
+            if on_progress is not None:
+                on_progress(f"Creating new volume of size {min_volume_size} GiB")
             largest_volume_size = min_volume_size
 
-    return volumes, largest_volume_size if largest_volume else 0
+    return volumes, largest_volume_size
 
 
-def get_launch_template_info(ec2: Any, lt_ids: List[str]) -> Dict[str, Dict[str, str]]:
+def _report_launch_template_warning(
+    message: str, on_warning: Optional[Callable[[str], None]]
+) -> None:
+    """Send a best-effort metadata warning to the workflow or application log."""
+    if on_warning is not None:
+        on_warning(message)
+    else:
+        LOGGER.warning(message)
+
+
+def _client_error_summary(error: ClientError) -> str:
+    """Return the AWS error code and message from a client error."""
+    details = error.response.get("Error", {})
+    code = details.get("Code", "Unknown")
+    message = details.get("Message", str(error))
+    return f"{code}: {message}"
+
+
+def get_launch_template_info(
+    ec2: Any,
+    lt_ids: List[str],
+    *,
+    on_warning: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Dict[str, str]]:
     """Get availability zone information for launch templates.
 
     Args:
         ec2: EC2 client
         lt_ids: List of launch template IDs
+        on_warning: Optional callback for non-fatal metadata lookup failures
 
     Returns:
         Dictionary mapping launch template IDs to AZ info with keys:
@@ -286,11 +323,21 @@ def get_launch_template_info(ec2: Any, lt_ids: List[str]) -> Dict[str, Dict[str,
                             az_name = subnet_desc["Subnets"][0].get(
                                 "AvailabilityZone", az_name
                             )
-                    except ClientError:
-                        pass
+                    except ClientError as error:
+                        _report_launch_template_warning(
+                            f"Unable to inspect subnet {subnet_id} for launch "
+                            f"template {lt_id}: {_client_error_summary(error)}; "
+                            f"using availability-zone label {az_name}",
+                            on_warning,
+                        )
 
-        except ClientError as e:
-            print(f"Warning: Error processing launch template {lt_id}: {e}")
+        except ClientError as error:
+            _report_launch_template_warning(
+                f"Unable to inspect launch template {lt_id}: "
+                f"{_client_error_summary(error)}; using fallback "
+                f"availability-zone label {az_name}",
+                on_warning,
+            )
 
         az_info[lt_id] = {"name": az_name, "index": az_index}
 
@@ -330,8 +377,6 @@ def launch_instance(
         - error: Exception if an error occurred, None otherwise
     """
     try:
-        print(f"Attempting to launch instance in {az_name}...")
-
         # Prepare common tags for all resources
         common_tags = [
             {"Key": "Name", "Value": f"devbox-{project}"},
@@ -380,18 +425,11 @@ def launch_instance(
         instance_id = instance_dct["InstanceId"]
         instance = ec2_resource.Instance(instance_id)
 
-        print(
-            f"Instance launched in {az_name}: {instance_id}. Waiting for running state..."
-        )
         return instance, instance_id, None
 
     except ClientError as e:
-        error_code = e.response.get("Error", {}).get("Code", "UnknownError")
-        error_message = e.response.get("Error", {}).get("Message", str(e))
-        print(f"Failed to launch in {az_name}: {error_code} - {error_message}")
         return None, None, e
     except Exception as e:
-        print(f"Unexpected error launching instance: {str(e)}")
         return None, None, e
 
 
@@ -558,10 +596,7 @@ def update_instance_status(
                 f"Unexpected status: {status} (expected 'nonexistent', 'READY', or 'LAUNCHING')"
             )
 
-    except ClientError as e:
-        error_code = e.response.get("Error", {}).get("Code", "UnknownError")
-        error_msg = f"Error updating DynamoDB for {project}: {error_code} - {str(e)}"
-        print(error_msg)
+    except ClientError:
         raise
 
 
@@ -741,9 +776,6 @@ def determine_ami(item: Dict[str, Any], base_ami: Optional[str]) -> str:
             "to create a new snapshot."
         )
 
-    if restored_ami and base_ami:
-        print("Warning: base AMI is ignored when restoring from existing snapshot")
-
     return ami_to_use
 
 
@@ -898,6 +930,285 @@ def display_instance_info(ec2: Any, instance_id: str, project: str, table: Any) 
 
     except Exception as e:
         print(f"\nWarning: Could not get instance details: {str(e)}")
+
+
+@dataclass(frozen=True)
+class LaunchRequest:
+    """Validated inputs for one DevBox launch workflow."""
+
+    project: str
+    instance_type: Optional[str] = None
+    key_pair: Optional[str] = None
+    volume_size: int = 0
+    base_ami: Optional[str] = None
+    param_prefix: str = "/devbox"
+    userdata: Optional[str] = None
+    assign_dns: bool = True
+    dns_subdomain: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class LaunchUpdate:
+    """One progress or warning update produced during launch."""
+
+    kind: Literal["progress", "warning"]
+    message: str
+
+
+@dataclass(frozen=True)
+class LaunchResult:
+    """Serializable details for a successfully launched instance."""
+
+    project: str
+    instance_id: str
+    state: str
+    instance_type: str
+    image_id: str
+    availability_zone: Optional[str]
+    private_ip: Optional[str]
+    public_ip: Optional[str]
+    ssh_username: Optional[str]
+    dns_name: Optional[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return the result as a wire-ready mapping."""
+        return asdict(self)
+
+
+def _instance_state(instance: Any) -> str:
+    """Return the current state name from an EC2 resource."""
+    state = getattr(instance, "state", None)
+    if isinstance(state, dict):
+        return str(state.get("Name", "unknown"))
+    data = getattr(getattr(instance, "meta", None), "data", {}) or {}
+    return str(data.get("State", {}).get("Name", "unknown"))
+
+
+def _resolve_ssh_username(
+    table: Any,
+    project: str,
+    image_id: str,
+    ec2: Any,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve and persist the SSH username, returning a warning if unavailable."""
+    try:
+        item = table.get_item(Key={"project": project}).get("Item", {})
+        username = str(item.get("Username", "")).strip()
+        if username:
+            return username, None
+
+        image = utils.get_image(image_id, ec2_client=ec2)
+        if image is None:
+            return None, f"Could not determine SSH username: AMI {image_id} not found"
+        username = determine_ssh_username(
+            image.get("Name", ""),
+            image.get("Description", ""),
+        )
+        if not username:
+            return None, "Could not determine SSH username from AMI metadata"
+        table.update_item(
+            Key={"project": project},
+            UpdateExpression="SET Username = :u",
+            ExpressionAttributeValues={":u": username},
+        )
+        return username, None
+    except Exception as exc:
+        return None, f"Could not determine SSH username: {exc}"
+
+
+def iter_launch_workflow(
+    request: LaunchRequest,
+    *,
+    aws: Optional[Dict[str, Any]] = None,
+    sleeper: Callable[[float], None] = time.sleep,
+    poll_interval_seconds: float = 15,
+    max_poll_attempts: int = 40,
+) -> Iterator[LaunchUpdate | LaunchResult]:
+    """Launch a DevBox and yield structured updates followed by one result."""
+    if not request.project.replace("-", "").isalnum():
+        raise ValueError("Project name must be alphanumeric with optional hyphens")
+    if request.volume_size < 0:
+        raise ValueError("Volume size must be a non-negative number")
+
+    active_aws = aws or initialize_aws_clients()
+    yield LaunchUpdate("progress", f"Loading launch configuration for {request.project}")
+    config = get_launch_config(active_aws, request.param_prefix, request.project)
+    status = validate_project_status(config["item"], request.project)
+
+    instance_type = request.instance_type or config["item"].get("LastInstanceType")
+    if not instance_type:
+        raise ValueError(
+            "No instance type specified and no previous instance type found for this project"
+        )
+    yield LaunchUpdate("progress", f"Using instance type: {instance_type}")
+
+    key_pair = request.key_pair or config["item"].get("LastKeyPair")
+    if not key_pair:
+        raise ValueError(
+            "No key pair specified and no previous keypair found for this project"
+        )
+    yield LaunchUpdate("progress", f"Using keypair: {key_pair}")
+
+    image_id = determine_ami(config["item"], request.base_ami)
+    if config["item"].get("RestoreAmi") and request.base_ami:
+        yield LaunchUpdate(
+            "warning", "Base AMI is ignored when restoring from existing snapshot"
+        )
+    yield LaunchUpdate("progress", f"Using AMI: {image_id}")
+
+    volume_progress: List[str] = []
+    volumes, _ = get_volume_info(
+        active_aws["ec2"],
+        image_id,
+        request.volume_size,
+        on_progress=volume_progress.append,
+    )
+    for message in volume_progress:
+        yield LaunchUpdate("progress", message)
+
+    template_warnings: List[str] = []
+    az_info = get_launch_template_info(
+        active_aws["ec2"],
+        config["lt_ids"],
+        on_warning=template_warnings.append,
+    )
+    for message in template_warnings:
+        yield LaunchUpdate("warning", message)
+
+    instance = None
+    instance_id = None
+    instance_info: Dict[str, Any] = {}
+    last_error: Optional[Exception] = None
+    for launch_template_id in config["lt_ids"]:
+        az_name = az_info[launch_template_id]["name"]
+        yield LaunchUpdate("progress", f"Attempting to launch instance in {az_name}")
+        candidate, candidate_id, error = launch_instance(
+            ec2=active_aws["ec2"],
+            ec2_resource=active_aws["ec2_resource"],
+            launch_template_id=launch_template_id,
+            image_id=image_id,
+            instance_type=instance_type,
+            key_name=key_pair,
+            volumes=volumes,
+            project=request.project,
+            az_name=az_name,
+            userdata=request.userdata,
+        )
+        if candidate is not None and candidate_id is not None:
+            instance = candidate
+            instance_id = candidate_id
+            instance_info = candidate.meta.data
+            break
+        last_error = error
+        yield LaunchUpdate("warning", f"Launch attempt in {az_name} failed: {error}")
+
+    if instance is None or instance_id is None:
+        message = "Failed to launch instance in all availability zones"
+        if last_error is not None:
+            message += f": {last_error}"
+        raise RuntimeError(message)
+
+    yield LaunchUpdate(
+        "progress", f"Instance {instance_id} launched; waiting for running state"
+    )
+    terminal_states = {"shutting-down", "terminated", "stopping", "stopped"}
+    for attempt in range(max_poll_attempts):
+        try:
+            instance.reload()
+            state = _instance_state(instance)
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code != "InvalidInstanceID.NotFound":
+                raise
+            state = "not yet visible to EC2"
+        if state == "running":
+            instance_info = instance.meta.data
+            break
+        if state in terminal_states:
+            raise RuntimeError(
+                f"Instance {instance_id} entered terminal state {state} while launching"
+            )
+        if attempt == max_poll_attempts - 1:
+            raise TimeoutError(
+                f"Instance {instance_id} did not reach running state after "
+                f"{max_poll_attempts} checks"
+            )
+        yield LaunchUpdate(
+            "progress", f"Instance {instance_id} is {state}; waiting for running state"
+        )
+        sleeper(poll_interval_seconds)
+
+    cname_domain = config["item"].get("CNAMEDomain")
+    dns_name: Optional[str] = None
+    if request.assign_dns:
+        try:
+            public_dns_name = str(getattr(instance, "public_dns_name", "") or "")
+            if not public_dns_name:
+                yield LaunchUpdate(
+                    "warning", "Instance does not have a public DNS name; skipping DNS assignment"
+                )
+            else:
+                dns_manager = DNSManager.from_ssm(
+                    param_prefix=request.param_prefix,
+                    ssm_client=active_aws["ssm"],
+                )
+                if dns_manager.provider is None:
+                    yield LaunchUpdate("progress", "DNS is not configured; skipping assignment")
+                else:
+                    preferred = request.dns_subdomain
+                    if preferred is None and cname_domain:
+                        preferred = dns_manager.normalize_subdomain(cname_domain)
+                        if preferred is None:
+                            yield LaunchUpdate(
+                                "warning",
+                                f"Stored DNS value '{cname_domain}' is invalid; using project name",
+                            )
+                    resolved = dns_manager.sanitize_dns_name(preferred or request.project)
+                    dns_name = dns_manager.assign_cname(
+                        subdomain=resolved,
+                        instance_public_dns=public_dns_name,
+                    )
+                    if dns_name:
+                        cname_domain = resolved
+                        yield LaunchUpdate("progress", f"Ensured DNS CNAME: {dns_name}")
+        except Exception as exc:
+            yield LaunchUpdate("warning", f"DNS assignment failed: {exc}")
+    elif cname_domain:
+        yield LaunchUpdate("progress", "DNS assignment disabled; existing DNS entry preserved")
+    else:
+        yield LaunchUpdate("progress", "DNS assignment disabled; no DNS record created")
+
+    ssh_username, username_warning = _resolve_ssh_username(
+        config["table"], request.project, image_id, active_aws["ec2"]
+    )
+    if username_warning:
+        yield LaunchUpdate("warning", username_warning)
+
+    update_instance_status(
+        table=config["table"],
+        project=request.project,
+        status=status,
+        instance_id=instance_id,
+        image_id=image_id,
+        instance_type=instance_type,
+        key_pair=key_pair,
+        instance_info=instance_info,
+        cname_domain=cname_domain,
+    )
+
+    placement = instance_info.get("Placement", {})
+    yield LaunchResult(
+        project=request.project,
+        instance_id=instance_id,
+        state=instance_info.get("State", {}).get("Name", _instance_state(instance)),
+        instance_type=instance_info.get("InstanceType", instance_type),
+        image_id=instance_info.get("ImageId", image_id),
+        availability_zone=placement.get("AvailabilityZone"),
+        private_ip=instance_info.get("PrivateIpAddress"),
+        public_ip=instance_info.get("PublicIpAddress"),
+        ssh_username=ssh_username,
+        dns_name=dns_name,
+    )
 
 
 def launch_programmatic(

@@ -14,6 +14,7 @@ class CliAction(StrEnum):
 
     STATUS = "status"
     TERMINATE = "terminate"
+    LAUNCH = "launch"
 
 
 class CliEventType(StrEnum):

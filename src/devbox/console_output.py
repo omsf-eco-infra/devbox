@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Union
+from typing import Any, Dict, List
 
 from rich.table import Table
 from rich.console import Console
@@ -166,6 +166,40 @@ class ConsoleOutput:
             message: Warning message to display
         """
         self.console.print(f"[yellow]Warning: {message}[/yellow]")
+
+    def print_progress(self, message: str) -> None:
+        """Print a progress message.
+
+        Parameters
+        ----------
+        message : str
+            Progress message to display.
+        """
+        self.console.print(f"[blue]{message}[/blue]")
+
+    def print_launch_result(self, result: dict) -> None:
+        """Render the final details for a launched instance."""
+        self.console.print("\n[bold green]Instance Launched Successfully[/bold green]")
+        labels = (
+            ("Instance ID", result.get("instance_id")),
+            ("State", result.get("state")),
+            ("Type", result.get("instance_type")),
+            ("AMI", result.get("image_id")),
+            ("Availability Zone", result.get("availability_zone")),
+            ("Private IP", result.get("private_ip")),
+            ("Public IP", result.get("public_ip")),
+            ("DNS", result.get("dns_name")),
+        )
+        for label, value in labels:
+            if value:
+                self.console.print(f"{label}: {value}")
+        public_ip = result.get("public_ip")
+        if public_ip:
+            username = result.get("ssh_username") or "<username>"
+            self.console.print(
+                f"\nYou can SSH into the instance using:\n"
+                f"ssh -i /path/to/your-key.pem {username}@{public_ip}"
+            )
     
     @staticmethod
     def _format_timedelta(delta) -> str:

@@ -131,6 +131,43 @@ def test_invoke_action_surfaces_warning_events():
 
 
 @responses.activate
+def test_invoke_action_surfaces_progress_events():
+    console = MagicMock()
+    responses.add(
+        responses.POST,
+        FUNCTION_URL,
+        body=(
+            '{"type":"progress","action":"demo-action","message":"working","data":{}}\n'
+            '{"type":"result","action":"demo-action","message":"ready","data":{"ok":true}}\n'
+            '{"type":"success","action":"demo-action","message":"done","data":{}}\n'
+        ),
+        content_type=NDJSON_MIME_TYPE,
+        status=200,
+    )
+
+    with patch("devbox.remote_client.utils.get_ssm_parameter", return_value=FUNCTION_URL):
+        invoke_action("demo-action", {}, "/devbox", console=console)
+
+    console.print_progress.assert_called_once_with("working")
+
+
+def test_invoke_action_uses_configurable_timeout():
+    response = MagicMock(status_code=200)
+    response.iter_lines.return_value = [
+        '{"type":"result","action":"demo-action","message":"ready","data":{"ok":true}}',
+        '{"type":"success","action":"demo-action","message":"done","data":{}}',
+    ]
+    with (
+        patch("devbox.remote_client.utils.get_ssm_parameter", return_value=FUNCTION_URL),
+        patch("devbox.remote_client.requests.post", return_value=response) as mock_post,
+    ):
+        invoke_action("demo-action", {}, "/devbox", read_timeout=930)
+
+    assert mock_post.call_args.kwargs["timeout"] == (10, 930)
+    response.close.assert_called_once_with()
+
+
+@responses.activate
 def test_invoke_action_rejects_malformed_ndjson():
     responses.add(
         responses.POST,

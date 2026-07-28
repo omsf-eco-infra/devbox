@@ -10,7 +10,6 @@ __version__ = "0.1.0"
 # Import key components for easier access
 from .devbox_manager import DevBoxManager
 from .console_output import ConsoleOutput
-from .launch import main as launch_instance
 from .cli import cli as devbox_cli
 
 # Alias for backward compatibility
@@ -19,7 +18,6 @@ main = devbox_cli
 __all__ = [
     "DevBoxManager",
     "ConsoleOutput",
-    "launch_instance",
     "devbox_cli",
     "main",
 ]

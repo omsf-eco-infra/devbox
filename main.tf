@@ -29,8 +29,11 @@ module "snapshot_lambda" {
 module "cli_lambda" {
   source = "./modules/cli-lambda"
 
-  prefix       = var.prefix
-  param_prefix = "/${var.prefix}"
+  prefix                = var.prefix
+  param_prefix          = "/${var.prefix}"
+  snapshot_table_arn    = module.snapshot_lambda.dynamodb_table_arn
+  ec2_instance_role_arn = module.devbox.ec2_role_arn
+  dns_provider          = var.dns_provider
 }
 
 module "dns_cleanup_lambda" {

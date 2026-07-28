@@ -10,6 +10,7 @@ from typing import Optional
 from .remote_client import normalize_param_prefix
 from .commands.status import run_status_command
 from .commands.terminate import run_terminate_command
+from .commands.launch import run_launch_command
 from .devbox_manager import DevBoxManager
 from .console_output import ConsoleOutput
 
@@ -179,12 +180,10 @@ def launch(
     PROJECT is the name of the project to launch.
     Optionally pass cloud-init user data with --userdata-file.
     """
-    from .launch import launch_programmatic
-
     console = ctx.obj["console"]
 
     try:
-        launch_programmatic(
+        run_launch_command(
             project=project,
             instance_type=instance_type,
             key_pair=key_pair,
@@ -194,6 +193,7 @@ def launch(
             userdata_file=userdata_file,
             assign_dns=not no_assign_dns,
             dns_subdomain=dns_subdomain,
+            console=console,
         )
     except Exception as e:
         console.print_error(f"Failed to launch instance: {str(e)}")

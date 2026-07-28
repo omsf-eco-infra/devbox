@@ -254,7 +254,7 @@ class TestLaunchCommand:
         assert "--no-assign-dns" in result.output
         assert "--dns-subdomain" in result.output
 
-    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.run_launch_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_launch_success(self, mock_console_class, mock_launch):
         mock_console = MagicMock()
@@ -283,9 +283,10 @@ class TestLaunchCommand:
             userdata_file=None,  # default
             assign_dns=True,
             dns_subdomain=None,
+            console=mock_console,
         )
 
-    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.run_launch_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_launch_with_all_options(self, mock_console_class, mock_launch):
         mock_console = MagicMock()
@@ -320,9 +321,10 @@ class TestLaunchCommand:
             userdata_file=None,  # default
             assign_dns=True,
             dns_subdomain=None,
+            console=mock_console,
         )
 
-    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.run_launch_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_launch_exception(self, mock_console_class, mock_launch):
         """Test launch command with exception."""
@@ -354,7 +356,7 @@ class TestLaunchCommand:
         assert result.exit_code in [2, 3]  # Allow both Click and our error codes
         assert "Missing argument" in result.output or "Error" in result.output
 
-    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.run_launch_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_launch_with_optional_parameters_only(
         self, mock_console_class, mock_launch
@@ -377,9 +379,10 @@ class TestLaunchCommand:
             userdata_file=None,  # default
             assign_dns=True,
             dns_subdomain=None,
+            console=mock_console,
         )
 
-    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.run_launch_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_launch_with_instance_type_only(self, mock_console_class, mock_launch):
         """Test launch command with only instance-type specified."""
@@ -401,9 +404,10 @@ class TestLaunchCommand:
             userdata_file=None,  # default
             assign_dns=True,
             dns_subdomain=None,
+            console=mock_console,
         )
 
-    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.run_launch_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_launch_with_key_pair_only(self, mock_console_class, mock_launch):
         """Test launch command with only key-pair specified."""
@@ -425,9 +429,10 @@ class TestLaunchCommand:
             userdata_file=None,  # default
             assign_dns=True,
             dns_subdomain=None,
+            console=mock_console,
         )
 
-    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.run_launch_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_launch_with_dns_flags(self, mock_console_class, mock_launch):
         mock_console = MagicMock()
@@ -455,6 +460,7 @@ class TestLaunchCommand:
             userdata_file=None,
             assign_dns=False,
             dns_subdomain="my-custom-label",
+            console=mock_console,
         )
 
     @pytest.mark.parametrize(
@@ -466,7 +472,7 @@ class TestLaunchCommand:
             ("0", 0),
         ],
     )
-    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.run_launch_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_launch_volume_size_parsing(
         self, mock_console_class, mock_launch, volume_size, expected
@@ -493,7 +499,7 @@ class TestLaunchCommand:
         call_args = mock_launch.call_args
         assert call_args[1]["volume_size"] == expected
 
-    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.run_launch_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_launch_with_userdata_file(self, mock_console_class, mock_launch, tmp_path):
         """Test launch command with userdata file option."""
@@ -975,7 +981,7 @@ class TestIntegrationScenarios:
             console=mock_console,
         )
 
-    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.run_launch_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_launch_realistic_scenario(self, mock_console_class, mock_launch):
         """Test launch command with realistic parameters."""
@@ -1011,6 +1017,7 @@ class TestIntegrationScenarios:
             userdata_file=None,  # default
             assign_dns=True,
             dns_subdomain=None,
+            console=mock_console,
         )
 
 
@@ -1065,7 +1072,7 @@ class TestErrorHandlingPatterns:
         assert result.exit_code == 1
         mock_console.print_error.assert_called()
 
-    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.run_launch_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_launch_error_exit_code(self, mock_console_class, mock_launch):
         """Test launch command error exit code."""
@@ -1217,7 +1224,7 @@ class TestParamPrefixEnvironmentOverrides:
         mock_manager_class.assert_called_once_with(prefix="env/devbox")
         mock_manager.delete_project_entry.assert_called_once_with("test-project")
 
-    @patch("devbox.launch.launch_programmatic")
+    @patch("devbox.cli.run_launch_command")
     @patch("devbox.cli.ConsoleOutput")
     def test_launch_uses_param_prefix_from_env(self, mock_console_class, mock_launch):
         mock_console = MagicMock()
@@ -1238,6 +1245,7 @@ class TestParamPrefixEnvironmentOverrides:
             userdata_file=None,
             assign_dns=True,
             dns_subdomain=None,
+            console=mock_console,
         )
 
     @patch("devbox.new.new_project_programmatic")
