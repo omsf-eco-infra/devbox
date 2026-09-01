@@ -3,14 +3,14 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "devbox"
+name = "omsf-devbox"
 version = "0.1.0"
 description = "DevBox management tool for AWS EC2 instances"
 authors = [
     {name = "David W.H. Swenson", email = "dwhs@hyperblazer.net"},
 ]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11,<3.14"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -58,7 +58,7 @@ channels = ["conda-forge"]
 platforms = ["osx-64", "osx-arm64", "linux-64", "linux-aarch64"]
 
 [tool.pixi.pypi-dependencies]
-devbox = { path = ".", editable = true }
+omsf-devbox = { path = ".", editable = true }
 
 [tool.pixi.environments]
 default = { solve-group = "default" }
